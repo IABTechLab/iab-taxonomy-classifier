@@ -20,31 +20,18 @@
 	"vectorize": [
 	    {
 		    "binding": "TAXONOMY_INDEX",
-		    "index_name": "iab-content-taxonomy"
+		    "index_name": "iab-content-taxonomy",
+			"remote": true
 		},
 		{
 			"binding": "CONTENT_INDEX",
-			"index_name": "classified-content"
+			"index_name": "classified-content",
+			"remote": true
 		}
-	]
-	/**
-	 * Smart Placement
-	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
-	 */
-	// "placement": {  "mode": "smart" }
-	/**
-	 * Bindings
-	 * Bindings allow your Worker to interact with resources on the Cloudflare Developer Platform, including
-	 * databases, object storage, AI inference, real-time communication and more.
-	 * https://developers.cloudflare.com/workers/runtime-apis/bindings/
-	 */
-	/**
-	 * Environment Variables
-	 * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
-	 * Note: Use secrets to store sensitive data.
-	 * https://developers.cloudflare.com/workers/configuration/secrets/
-	 */
-	// "vars": {  "MY_VARIABLE": "production_value" }
+	],
+	"vars": {
+		"EMBEDDING_MODEL": "@cf/baai/bge-base-en-v1.5"
+	},
 	/**
 	 * Static Assets
 	 * https://developers.cloudflare.com/workers/static-assets/binding/

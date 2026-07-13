@@ -11,11 +11,28 @@
  * Learn more at https://developers.cloudflare.com/workers/
  */
 
+import { classifyHomepage } from './classify';
 import { scrapeHomepage } from './scrape';
 
 export default {
 	async fetch(request, env, ctx): Promise<Response> {
 		const { pathname, searchParams } = new URL(request.url);
+		console.log(`[fetch] ${request.method} ${pathname}`);
+
+		if (request.method === 'GET' && pathname === '/classify') {
+			const target = searchParams.get('url');
+			if (!target) {
+				return new Response('Missing ?url= query parameter', { status: 400 });
+			}
+
+			try {
+				const result = await classifyHomepage(target, env);
+				return Response.json(result);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return Response.json({ error: message, url: target }, { status: 502 });
+			}
+		}
 
 		// TEMPORARY: local scraper testing only — remove or gate behind an env check before production deploy.
 		if (request.method === 'GET' && pathname === '/debug-scrape') {
@@ -33,6 +50,7 @@ export default {
 			}
 		}
 
+		console.log(`pathname = ${pathname}`);
 		return new Response("Hello World!");
 	},
 } satisfies ExportedHandler<Env>;
