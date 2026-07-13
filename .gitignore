@@ -12,7 +12,7 @@ node_modules/
 !.env.example
 
 # Generated data (seed script output)
-data/vectors.ndjson
+data/content-taxonomy-3.1-vectors.ndjson
 
 # Build output
 dist/

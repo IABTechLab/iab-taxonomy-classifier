@@ -25,7 +25,7 @@
 
 <rect x="220" y="388" width="240" height="56" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
 <text x="340" y="410" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="600" fill="#2C2C2A">Write NDJSON</text>
-<text x="340" y="428" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#444441">data/vectors.ndjson</text>
+<text x="340" y="428" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#444441">data/content-taxonomy-3.1-vectors.ndjson</text>
 <line x1="340" y1="444" x2="340" y2="502" stroke="#5F5E5A" stroke-width="0.5" marker-end="url(#arrow2)"/>
 
 <rect x="220" y="504" width="240" height="56" rx="8" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>

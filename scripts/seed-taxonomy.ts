@@ -14,7 +14,7 @@ import dotenv from 'dotenv';
 // ---------------------------------------------------------------------------
 
 const TAXONOMY_TSV_PATH = 'data/content-taxonomy-3.1.tsv';
-const OUTPUT_NDJSON_PATH = 'data/vectors.ndjson';
+const OUTPUT_NDJSON_PATH = 'data/content-taxonomy-3.1-vectors.ndjson';
 
 // ---------------------------------------------------------------------------
 // Load .env before reading process.env

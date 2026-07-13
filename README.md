@@ -65,7 +65,7 @@ The 768 dimensions match the embedding model used by Workers AI (`@cf/baai/bge-b
 
 ### Seed the taxonomy
 
-The worker needs vector embeddings for every IAB taxonomy category before it can classify anything. A standalone script reads the official taxonomy TSV, calls the Workers AI API to generate embeddings, and writes them to `data/vectors.ndjson`.
+The worker needs vector embeddings for every IAB taxonomy category before it can classify anything. A standalone script reads the official taxonomy TSV, calls the Workers AI API to generate embeddings, and writes them to `data/content-taxonomy-3.1-vectors.ndjson`.
 
 **1. Configure environment variables**
 
@@ -90,16 +90,16 @@ The taxonomy file is already included at `data/content-taxonomy-3.1.tsv` (IAB Co
 npx tsx scripts/seed-taxonomy.ts
 ```
 
-The script processes each taxonomy row sequentially, embedding the category name and tier path (e.g. `Amusement and Theme Parks: Attractions > Amusement and Theme Parks`). Progress is logged every 50 rows. Output is written incrementally to `data/vectors.ndjson` as newline-delimited JSON, so a partial run isn't lost if the script is interrupted.
+The script processes each taxonomy row sequentially, embedding the category name and tier path (e.g. `Amusement and Theme Parks: Attractions > Amusement and Theme Parks`). Progress is logged every 50 rows. Output is written incrementally to `data/content-taxonomy-3.1-vectors.ndjson` as newline-delimited JSON, so a partial run isn't lost if the script is interrupted.
 
 > **Note:** With ~700 categories and one API call per row, processed sequentially, the full run takes several minutes. Rate-limit responses (HTTP 429) are retried automatically; any rows that still fail after retries are listed in the summary at the end.
 
 **3. Load embeddings into Vectorize**
 
-Once `data/vectors.ndjson` has been generated, insert the vectors into the `iab-content-taxonomy` index:
+Once `data/content-taxonomy-3.1-vectors.ndjson` has been generated, insert the vectors into the `iab-content-taxonomy` index:
 
 ```bash
-npx wrangler vectorize insert iab-content-taxonomy --file=data/vectors.ndjson
+npx wrangler vectorize insert iab-content-taxonomy --file=data/content-taxonomy-3.1-vectors.ndjson
 ```
 
 Verify the import:
@@ -167,7 +167,7 @@ npx wrangler deploy
 ```
 data/
   content-taxonomy-3.1.tsv   # Official IAB Content Taxonomy v3.1 (input)
-  vectors.ndjson              # Generated taxonomy embeddings (output from seed script)
+  content-taxonomy-3.1-vectors.ndjson  # Generated taxonomy embeddings (output from seed script)
 docs/
   pipeline-seed.svg           # Diagram: taxonomy seeding pipeline
   pipeline-classify.svg       # Diagram: classify request pipeline
