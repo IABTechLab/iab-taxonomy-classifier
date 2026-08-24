@@ -11,7 +11,8 @@
     "seed-taxonomy": "tsx scripts/seed-taxonomy.ts",
     "generate:synthetic": "tsx scripts/generate-synthetic-data.ts",
     "clean:synthetic": "rm -f data/synthetic-content.ndjson data/synthetic-content.failures.ndjson",
-    "summarize:synthetic": "tsx scripts/summarize-synthetic-data.ts"
+    "summarize:synthetic": "tsx scripts/summarize-synthetic-data.ts",
+    "classify:synthetic": "tsx scripts/classify-synthetic-data.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.70.1",
