@@ -1,0 +1,21 @@
+{
+  "model": "@cf/baai/bge-base-en-v1.5",
+  "generatedAt": "2026-08-24T21:58:42.882Z",
+  "topN": 5,
+  "minScore": 0.65,
+  "totalRecords": 704,
+  "classified": 704,
+  "skippedEmbeddingErrors": 0,
+  "accuracy": {
+    "top1Correct": 528,
+    "top1Rate": 0.75,
+    "topNCorrect": 665,
+    "topNRate": 0.9446022727272727
+  },
+  "coverage": {
+    "recordsWithAnyMatch": 645,
+    "recordsWithAnyMatchRate": 0.9161931818181818,
+    "recordsWithCorrectMatchKept": 596,
+    "recordsWithCorrectMatchKeptRate": 0.8465909090909091
+  }
+}

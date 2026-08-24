@@ -124,6 +124,7 @@ The full run prints one line per generated category (up to ~700) followed by a t
 2. Compares that vector against the IAB taxonomy embeddings using cosine similarity, computed locally in-memory.
 3. Keeps the top-N nearest categories that clear a configurable minimum score.
 4. Writes one NDJSON line per record with the record's known (ground-truth) category alongside the matches found, so you can measure how often the classifier's top match — or any of its top-N — agrees with the category the sample was generated for.
+5. Writes a single JSON summary scoring the whole run against that ground truth.
 
 ```bash
 npm run classify:synthetic
@@ -140,15 +141,34 @@ npm run classify:synthetic -- --model=@cf/baai/bge-base-en-v1.5 --top-n=3 --min-
 | `--min-score=` | `0.3` | Minimum cosine similarity for a match to be kept |
 | `--limit=` | (none) | Only classify the first N records — useful for a quick check |
 
-Output is written to `data/synthetic-content.classified.<model-slug>.ndjson`, one line per record:
+Per-record results are written to `data/synthetic-content.classified.<model-slug>.ndjson`, one line per record:
 
 ```json
 {"taxonomy_id":"179","taxonomy_name":"Bars & Restaurants","matches":[{"id":"179","name":"Bars & Restaurants","score":0.612},{"id":"218","name":"Dining Out","score":0.554}]}
 ```
 
+A single run summary is written alongside it to `data/synthetic-content.classified.<model-slug>.summary.json`:
+
+```json
+{
+  "model": "@cf/google/embeddinggemma-300m",
+  "generatedAt": "2026-08-24T21:56:20.078Z",
+  "topN": 5,
+  "minScore": 0.3,
+  "totalRecords": 704,
+  "classified": 704,
+  "skippedEmbeddingErrors": 0,
+  "accuracy": { "top1Correct": 528, "top1Rate": 0.75, "topNCorrect": 665, "topNRate": 0.9446 },
+  "coverage": { "recordsWithAnyMatch": 678, "recordsWithAnyMatchRate": 0.963, "recordsWithCorrectMatchKept": 631, "recordsWithCorrectMatchKeptRate": 0.8963 }
+}
+```
+
+- `accuracy` measures the embedding model's raw discriminative power — whether each sample's own ground-truth category is its single best match (`top1`) or anywhere in its top-N nearest matches (`topN`), ranked across *all* taxonomy categories, independent of `--min-score=`.
+- `coverage` measures how usable the output actually is once `--min-score=` is applied — the same filtering used for `matches` in the NDJSON output: what fraction of records keep any match at all, and what fraction still keep their correct match after filtering.
+
 Notes:
 
-- **Taxonomy embeddings are cached per model**, at `data/content-taxonomy-3.1-vectors.<model-slug>.ndjson` — the same file `seed-taxonomy.ts` writes (see [Seed the taxonomy](#seed-the-taxonomy)). If it already exists for the requested `--model=`, it's reused as-is; otherwise this script embeds `data/content-taxonomy-3.1.tsv` once for that model and caches the result there, so later runs with the same model skip straight to classifying. Neither these caches nor the `synthetic-content.classified.*.ndjson` results are gitignored — commit them if you want the results available without re-running the embedding pass.
+- **Taxonomy embeddings are cached per model**, at `data/content-taxonomy-3.1-vectors.<model-slug>.ndjson` — the same file `seed-taxonomy.ts` writes (see [Seed the taxonomy](#seed-the-taxonomy)). If it already exists for the requested `--model=`, it's reused as-is; otherwise this script embeds `data/content-taxonomy-3.1.tsv` once for that model and caches the result there, so later runs with the same model skip straight to classifying. Neither these caches nor the `synthetic-content.classified.*.ndjson`/`.summary.json` results are gitignored — commit them if you want the results available without re-running the embedding pass.
 - **The default min-score (0.3) is calibrated for `embeddinggemma-300m`**, whose cosine scores run lower than `bge-base-en-v1.5`'s (see the constant's comment in the script). Re-tune `--min-score=` if you switch models — a threshold tuned for one embedding model's score distribution won't transfer to another.
 - Requires the same `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` as the seed script.
 
@@ -262,7 +282,8 @@ data/
   content-taxonomy-3.1-vectors.*.ndjson     # Per-model taxonomy embeddings (output from seed-taxonomy.ts and classify-synthetic-data.ts)
   synthetic-content.ndjson                  # Generated synthetic samples (output from generate-synthetic-data script)
   synthetic-content.failures.ndjson         # Categories that failed/were refused during generation
-  synthetic-content.classified.*.ndjson     # Per-model classification results (output from classify-synthetic-data script)
+  synthetic-content.classified.*.ndjson         # Per-model classification results (output from classify-synthetic-data script)
+  synthetic-content.classified.*.summary.json   # Per-model accuracy summary (output from classify-synthetic-data script)
 docs/
   pipeline-seed.svg           # Diagram: taxonomy seeding pipeline
   pipeline-classify.svg       # Diagram: classify request pipeline

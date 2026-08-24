@@ -86,6 +86,44 @@ type ClassifiedRecord = {
 	matches: TaxonomyMatch[];
 };
 
+type ClassificationSummary = {
+	model: string;
+	generatedAt: string;
+	topN: number;
+	minScore: number;
+	totalRecords: number;
+	classified: number;
+	skippedEmbeddingErrors: number;
+	/**
+	 * How well the embedding model ranks each sample's own ground-truth
+	 * category among the top-N nearest taxonomy vectors, independent of
+	 * `minScore` — a measure of the embedding model's discriminative power.
+	 */
+	accuracy: {
+		top1Correct: number;
+		top1Rate: number;
+		topNCorrect: number;
+		topNRate: number;
+	};
+	/**
+	 * How usable the output actually is once `minScore` is applied — the
+	 * same filtering used for the matches written to the classified NDJSON.
+	 */
+	coverage: {
+		recordsWithAnyMatch: number;
+		recordsWithAnyMatchRate: number;
+		recordsWithCorrectMatchKept: number;
+		recordsWithCorrectMatchKeptRate: number;
+	};
+};
+
+type RecordResult = {
+	rawTop1Correct: boolean;
+	rawTopNCorrect: boolean;
+	hasAnyMatch: boolean;
+	correctMatchKept: boolean;
+};
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -106,6 +144,10 @@ function parseArgs() {
 
 function outputPathForModel(model: string): string {
 	return `data/synthetic-content.classified.${modelSlug(model)}.ndjson`;
+}
+
+function summaryPathForModel(model: string): string {
+	return `data/synthetic-content.classified.${modelSlug(model)}.summary.json`;
 }
 
 async function readNdjson<T>(path: string): Promise<T[]> {
@@ -167,29 +209,63 @@ async function loadTaxonomyVectors(model: string): Promise<TaxonomyVector[]> {
 	return generateTaxonomyVectors(model, cachedPath);
 }
 
-function topMatches(
-	contentVector: number[],
-	taxonomyVectors: TaxonomyVector[],
-	topN: number,
-	minScore: number,
-): TaxonomyMatch[] {
+/** Nearest taxonomy vectors by cosine similarity, best first, capped at `topN`. */
+function rankMatches(contentVector: number[], taxonomyVectors: TaxonomyVector[], topN: number): TaxonomyMatch[] {
 	return taxonomyVectors
 		.map((tv) => ({ id: tv.id, name: tv.metadata.name, score: cosineSimilarity(contentVector, tv.values) }))
 		.sort((a, b) => b.score - a.score)
-		.slice(0, topN)
-		.filter((match) => match.score >= minScore);
+		.slice(0, topN);
 }
 
-async function pMap<T, R>(items: T[], concurrency: number, fn: (item: T, index: number) => Promise<R>): Promise<void> {
+async function pMap<T, R>(items: T[], concurrency: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+	const results: R[] = new Array(items.length);
 	let cursor = 0;
 	async function worker() {
 		while (true) {
 			const index = cursor++;
 			if (index >= items.length) return;
-			await fn(items[index], index);
+			results[index] = await fn(items[index], index);
 		}
 	}
 	await Promise.all(Array.from({ length: concurrency }, worker));
+	return results;
+}
+
+function summarize(
+	model: string,
+	topN: number,
+	minScore: number,
+	totalRecords: number,
+	skipped: number,
+	results: RecordResult[],
+): ClassificationSummary {
+	const classified = results.length;
+	const top1Correct = results.filter((r) => r.rawTop1Correct).length;
+	const topNCorrect = results.filter((r) => r.rawTopNCorrect).length;
+	const recordsWithAnyMatch = results.filter((r) => r.hasAnyMatch).length;
+	const recordsWithCorrectMatchKept = results.filter((r) => r.correctMatchKept).length;
+
+	return {
+		model,
+		generatedAt: new Date().toISOString(),
+		topN,
+		minScore,
+		totalRecords,
+		classified,
+		skippedEmbeddingErrors: skipped,
+		accuracy: {
+			top1Correct,
+			top1Rate: classified ? top1Correct / classified : 0,
+			topNCorrect,
+			topNRate: classified ? topNCorrect / classified : 0,
+		},
+		coverage: {
+			recordsWithAnyMatch,
+			recordsWithAnyMatchRate: classified ? recordsWithAnyMatch / classified : 0,
+			recordsWithCorrectMatchKept,
+			recordsWithCorrectMatchKeptRate: classified ? recordsWithCorrectMatchKept / classified : 0,
+		},
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -204,6 +280,7 @@ async function main(): Promise<void> {
 
 	const { model, topN, minScore, limit } = parseArgs();
 	const outputPath = outputPathForModel(model);
+	const summaryPath = summaryPathForModel(model);
 
 	console.log(`Model: ${model}`);
 	console.log(`Top-N: ${topN}, min score: ${minScore}`);
@@ -221,39 +298,65 @@ async function main(): Promise<void> {
 	let processed = 0;
 	let skipped = 0;
 
-	await pMap(records, CONCURRENCY, async (record) => {
-		const text = `${record.title}\n\n${record.body}`;
+	const results = (
+		await pMap(records, CONCURRENCY, async (record): Promise<RecordResult | null> => {
+			const text = `${record.title}\n\n${record.body}`;
 
-		const values = await embedText(text, {
-			model,
-			dimensions: EMBEDDING_DIMENSIONS,
-			accountId: CLOUDFLARE_ACCOUNT_ID,
-			apiToken: CLOUDFLARE_API_TOKEN,
-		});
+			const values = await embedText(text, {
+				model,
+				dimensions: EMBEDDING_DIMENSIONS,
+				accountId: CLOUDFLARE_ACCOUNT_ID,
+				apiToken: CLOUDFLARE_API_TOKEN,
+			});
 
-		if (values === null) {
-			console.warn(`[skip] ${record.category_id} — ${record.category_name}: rate limited after retries`);
-			skipped++;
-		} else {
-			const classified: ClassifiedRecord = {
-				taxonomy_id: record.category_id,
-				taxonomy_name: record.category_name,
-				matches: topMatches(values, taxonomyVectors, topN, minScore),
-			};
-			outStream.write(JSON.stringify(classified) + '\n');
-		}
+			let result: RecordResult | null = null;
 
-		processed++;
-		if (processed % 25 === 0 || processed === total) {
-			console.log(`${processed}/${total} processed (${skipped} skipped)`);
-		}
-	});
+			if (values === null) {
+				console.warn(`[skip] ${record.category_id} — ${record.category_name}: rate limited after retries`);
+				skipped++;
+			} else {
+				const ranked = rankMatches(values, taxonomyVectors, topN);
+				const matches = ranked.filter((match) => match.score >= minScore);
+
+				const classified: ClassifiedRecord = {
+					taxonomy_id: record.category_id,
+					taxonomy_name: record.category_name,
+					matches,
+				};
+				outStream.write(JSON.stringify(classified) + '\n');
+
+				result = {
+					rawTop1Correct: ranked[0]?.id === record.category_id,
+					rawTopNCorrect: ranked.some((match) => match.id === record.category_id),
+					hasAnyMatch: matches.length > 0,
+					correctMatchKept: matches.some((match) => match.id === record.category_id),
+				};
+			}
+
+			processed++;
+			if (processed % 25 === 0 || processed === total) {
+				console.log(`${processed}/${total} processed (${skipped} skipped)`);
+			}
+
+			return result;
+		})
+	).filter((r): r is RecordResult => r !== null);
 
 	await new Promise<void>((resolve) => outStream.end(resolve));
 
+	const summary = summarize(model, topN, minScore, total, skipped, results);
+	await writeFile(summaryPath, JSON.stringify(summary, null, 2) + '\n');
+
 	console.log('\n--- Summary ---');
-	console.log(`Classified: ${total - skipped}/${total} (${skipped} skipped)`);
-	console.log(`Output written to: ${outputPath}`);
+	console.log(`Classified: ${summary.classified}/${summary.totalRecords} (${summary.skippedEmbeddingErrors} skipped)`);
+	console.log(
+		`Accuracy — top-1: ${(summary.accuracy.top1Rate * 100).toFixed(1)}%, top-${topN}: ${(summary.accuracy.topNRate * 100).toFixed(1)}%`,
+	);
+	console.log(
+		`Coverage at min-score ${minScore} — any match: ${(summary.coverage.recordsWithAnyMatchRate * 100).toFixed(1)}%, correct match kept: ${(summary.coverage.recordsWithCorrectMatchKeptRate * 100).toFixed(1)}%`,
+	);
+	console.log(`Results written to: ${outputPath}`);
+	console.log(`Summary written to: ${summaryPath}`);
 }
 
 main().catch((error) => {
