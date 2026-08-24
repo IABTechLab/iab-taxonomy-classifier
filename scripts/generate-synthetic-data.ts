@@ -18,6 +18,9 @@ const SyntheticContentSchema = z.object({
   body: z
     .string()
     .describe("2-4 paragraphs of body content, 120-300 words"),
+  keywords: z
+    .array(z.string())
+    .describe("3-6 short keywords/phrases summarizing the content, lowercase"),
 });
 
 interface TaxonomyEntry {
@@ -37,6 +40,7 @@ interface SyntheticRecord {
   publisher_name: string;
   title: string;
   body: string;
+  keywords: string[];
 }
 
 const SYSTEM_PROMPT = `You generate short, fictional synthetic web content used to build and evaluate a content-classification system based on the IAB Content Taxonomy 3.1. For a given taxonomy category, write one realistic snippet of publisher website content (a news article, blog post, product page, or forum post) that a classifier would confidently label under that exact category.
@@ -46,6 +50,7 @@ Rules:
 - Write in a neutral, informational style appropriate for a mainstream publisher website.
 - For categories under "Sensitive Topics", "Crime", "War and Conflicts", or other sensitive subject matter: describe the topic from a factual, third-person, non-graphic point of view (e.g. as a news report, policy discussion, age-verification notice, or informational page). Do not include graphic violence, explicit sexual content, hateful language, instructions for wrongdoing, or content that glorifies harm. The goal is topical relevance for classification, not graphic depiction.
 - Keep the body between 120 and 300 words.
+- Keywords should be short (1-3 words each) and reflect what the content is actually about, not the taxonomy category label verbatim.
 - Output only the requested structured fields.`;
 
 function readTaxonomy(): TaxonomyEntry[] {
@@ -131,6 +136,7 @@ async function generateForCategory(
     publisher_name: response.parsed_output.publisher_name,
     title: response.parsed_output.title,
     body: response.parsed_output.body,
+    keywords: response.parsed_output.keywords,
   };
 }
 

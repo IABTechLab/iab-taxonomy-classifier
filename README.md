@@ -63,7 +63,7 @@ cp .env.example .env
 
 ### Generate synthetic sample content
 
-For training or evaluating a content classifier, `scripts/generate-synthetic-data.ts` calls the Anthropic API (Claude Haiku 4.5) once per taxonomy category to generate one fictional publisher webpage sample — a `title`, `body`, and fictional `publisher_name` — that should classify under that exact category. Output is written as NDJSON to `data/synthetic-content.ndjson`.
+For training or evaluating a content classifier, `scripts/generate-synthetic-data.ts` calls the Anthropic API (Claude Haiku 4.5) once per taxonomy category to generate one fictional publisher webpage sample — a `title`, `body`, fictional `publisher_name`, and a short list of `keywords` summarizing the content — that should classify under that exact category. Output is written as NDJSON to `data/synthetic-content.ndjson`.
 
 This is independent of the Workers AI / Vectorize setup below — it reads categories straight from `data/content-taxonomy-3.1-vectors.ndjson` and only needs `ANTHROPIC_API_KEY` set in `.env`, so it's the first thing most people run.
 
@@ -102,16 +102,16 @@ Removes `data/synthetic-content.ndjson` and `data/synthetic-content.failures.ndj
 
 #### Summarize the generated samples
 
-`scripts/summarize-synthetic-data.ts` prints one line per record in `data/synthetic-content.ndjson` — category ID, category name, and a short snippet of the generated body — so you can eyeball coverage and quality without opening the raw NDJSON.
+`scripts/summarize-synthetic-data.ts` prints one line per record in `data/synthetic-content.ndjson` — category ID, category name, keywords, and a short snippet of the generated body — so you can eyeball coverage and quality without opening the raw NDJSON.
 
 ```bash
 npm run summarize:synthetic
 ```
 
 ```
-154   Malls & Shopping Centers        Westbrook Village Mall announced the grand opening...
-153   Historic Site and Landmark Tours   The Greystone Manor, built in 1887, stands as one...
-179   Bars & Restaurants              The Copper Kettle, a highly anticipated new gastropub...
+154   Malls & Shopping Centers   [shopping malls, retail expansion, mall renovation]   Westbrook Village Mall announced the grand opening...
+153   Historic Site and Landmark Tours   [historic architecture, renaissance estate, guided tours]   The Greystone Manor, built in 1887, stands as one...
+179   Bars & Restaurants   [gastropub, restaurant opening, craft cocktails]   The Copper Kettle, a highly anticipated new gastropub...
 ```
 
 The full run prints one line per generated category (up to ~700) followed by a total count, so pipe it through `less` or redirect to a file if you want to page through it: `npm run summarize:synthetic > data/synthetic-content.summary.txt`.
