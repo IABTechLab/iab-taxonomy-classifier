@@ -57,9 +57,9 @@ cp .env.example .env
 |---|---|
 | `CLOUDFLARE_ACCOUNT_ID` | Your Cloudflare account ID |
 | `CLOUDFLARE_API_TOKEN` | API token with Workers AI + Vectorize permissions |
-| `EMBEDDING_MODEL` | Workers AI embedding model (e.g. `@cf/baai/bge-base-en-v1.5`) |
-| `EMBEDDING_DIMENSIONS` | Must match your Vectorize index dimensions (`768`) |
 | `ANTHROPIC_API_KEY` | Only needed for [generating synthetic sample content](#generate-synthetic-sample-content) — get one from the [Anthropic Console](https://console.anthropic.com/settings/keys) |
+
+The embedding model and its vector dimensions aren't set in `.env` — `scripts/seed-taxonomy.ts` and `scripts/classify-synthetic-data.ts` both take them as `--model=`/`--dimensions=` flags instead (see [Seed the taxonomy](#seed-the-taxonomy) and [Classify the generated samples](#classify-the-generated-samples-offline-evaluation)), defaulting to `@cf/google/embeddinggemma-300m` at 768 dimensions. The deployed worker's model is configured separately, via `EMBEDDING_MODEL` in `wrangler.jsonc`.
 
 ### Generate synthetic sample content
 
@@ -137,9 +137,12 @@ npm run classify:synthetic -- --model=@cf/baai/bge-base-en-v1.5 --top-n=3 --min-
 | Flag | Default | Meaning |
 |---|---|---|
 | `--model=` | `@cf/google/embeddinggemma-300m` | Workers AI embedding model id |
+| `--dimensions=` | `768` | Expected embedding vector size for `--model=` |
 | `--top-n=` | `5` | Max taxonomy matches kept per record |
 | `--min-score=` | `0.3` | Minimum cosine similarity for a match to be kept |
 | `--limit=` | (none) | Only classify the first N records — useful for a quick check |
+
+`--model=`/`--dimensions=` share their defaults with `seed-taxonomy.ts` (see [`scripts/lib/workers-ai.ts`](scripts/lib/workers-ai.ts)) so both scripts agree without the value being duplicated. 768 covers both models this project has been run against (`embeddinggemma-300m` and `bge-base-en-v1.5`) — override `--dimensions=` if you pick a `--model=` that embeds to a different size; a mismatch fails fast instead of silently writing bad vectors.
 
 Per-record results are written to `data/synthetic-content.classified.<model-slug>.ndjson`, one line per record:
 
@@ -192,7 +195,7 @@ The 768 dimensions match the embedding model used by Workers AI (`@cf/baai/bge-b
 
 ### Seed the taxonomy
 
-The worker needs vector embeddings for every IAB taxonomy category before it can classify anything. A standalone script reads the official taxonomy TSV, calls the Workers AI API (using `EMBEDDING_MODEL` from `.env`) to generate embeddings, and writes them to `data/content-taxonomy-3.1-vectors.<model-slug>.ndjson` — named after the model so vectors from different embedding models never collide (e.g. `data/content-taxonomy-3.1-vectors.cf-baai-bge-base-en-v1-5.ndjson` for the default `@cf/baai/bge-base-en-v1.5`).
+The worker needs vector embeddings for every IAB taxonomy category before it can classify anything. A standalone script reads the official taxonomy TSV, calls the Workers AI API to generate embeddings, and writes them to `data/content-taxonomy-3.1-vectors.<model-slug>.ndjson` — named after the model so vectors from different embedding models never collide.
 
 **1. Run the seed script**
 
@@ -202,7 +205,11 @@ The taxonomy file is already included at `data/content-taxonomy-3.1.tsv` (IAB Co
 npx tsx scripts/seed-taxonomy.ts
 ```
 
-The script processes each taxonomy row sequentially, embedding the category name and tier path (e.g. `Amusement and Theme Parks: Attractions > Amusement and Theme Parks`). Progress is logged every 50 rows. Output is written incrementally to `data/content-taxonomy-3.1-vectors.<model-slug>.ndjson` as newline-delimited JSON, so a partial run isn't lost if the script is interrupted. This file isn't gitignored — commit it once generated so others don't have to re-run the embedding pass.
+```bash
+npx tsx scripts/seed-taxonomy.ts --model=@cf/baai/bge-base-en-v1.5 --dimensions=768
+```
+
+The model and its vector size are `--model=`/`--dimensions=` flags (default `@cf/google/embeddinggemma-300m` at `768` — the same defaults `classify-synthetic-data.ts` uses, shared via `scripts/lib/workers-ai.ts`), not `.env` variables. The script processes each taxonomy row sequentially, embedding the category name and tier path (e.g. `Amusement and Theme Parks: Attractions > Amusement and Theme Parks`). Progress is logged every 50 rows. Output is written incrementally to `data/content-taxonomy-3.1-vectors.<model-slug>.ndjson` as newline-delimited JSON, so a partial run isn't lost if the script is interrupted. This file isn't gitignored — commit it once generated so others don't have to re-run the embedding pass.
 
 > **Note:** With ~700 categories and one API call per row, processed sequentially, the full run takes several minutes. Rate-limit responses (HTTP 429) are retried automatically; any rows that still fail after retries are listed in the summary at the end.
 

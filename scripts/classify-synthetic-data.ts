@@ -9,13 +9,21 @@
  *
  * Run from the project root:
  *   npx tsx scripts/classify-synthetic-data.ts
- *   npx tsx scripts/classify-synthetic-data.ts --model=@cf/baai/bge-base-en-v1.5 --top-n=3 --min-score=0.6
+ *   npx tsx scripts/classify-synthetic-data.ts --model=@cf/baai/bge-base-en-v1.5 --dimensions=768 --top-n=3 --min-score=0.6
  */
 
 import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import fs from 'node:fs';
 import dotenv from 'dotenv';
-import { parseTaxonomyTsv, embedText, modelSlug, taxonomyVectorsPathForModel, cosineSimilarity } from './lib/workers-ai';
+import {
+	parseTaxonomyTsv,
+	embedText,
+	modelSlug,
+	taxonomyVectorsPathForModel,
+	cosineSimilarity,
+	DEFAULT_EMBEDDING_MODEL,
+	DEFAULT_EMBEDDING_DIMENSIONS,
+} from './lib/workers-ai';
 
 // ---------------------------------------------------------------------------
 // Fixed paths (not configurable via environment variables)
@@ -24,7 +32,6 @@ import { parseTaxonomyTsv, embedText, modelSlug, taxonomyVectorsPathForModel, co
 const SYNTHETIC_CONTENT_PATH = 'data/synthetic-content.ndjson';
 const TAXONOMY_TSV_PATH = 'data/content-taxonomy-3.1.tsv';
 
-const DEFAULT_MODEL = '@cf/google/embeddinggemma-300m';
 const DEFAULT_TOP_N = 5;
 
 /**
@@ -49,7 +56,6 @@ dotenv.config();
 
 const CLOUDFLARE_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID as string;
 const CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN as string;
-const EMBEDDING_DIMENSIONS = Number(process.env.EMBEDDING_DIMENSIONS ?? 768);
 
 // ---------------------------------------------------------------------------
 // Type definitions
@@ -130,12 +136,14 @@ type RecordResult = {
 
 function parseArgs() {
 	const modelArg = process.argv.find((a) => a.startsWith('--model='));
+	const dimensionsArg = process.argv.find((a) => a.startsWith('--dimensions='));
 	const topNArg = process.argv.find((a) => a.startsWith('--top-n='));
 	const minScoreArg = process.argv.find((a) => a.startsWith('--min-score='));
 	const limitArg = process.argv.find((a) => a.startsWith('--limit='));
 
 	return {
-		model: modelArg ? modelArg.split('=')[1] : DEFAULT_MODEL,
+		model: modelArg ? modelArg.split('=')[1] : DEFAULT_EMBEDDING_MODEL,
+		dimensions: dimensionsArg ? Number(dimensionsArg.split('=')[1]) : DEFAULT_EMBEDDING_DIMENSIONS,
 		topN: topNArg ? parseInt(topNArg.split('=')[1], 10) : DEFAULT_TOP_N,
 		minScore: minScoreArg ? Number(minScoreArg.split('=')[1]) : DEFAULT_MIN_SCORE,
 		limit: limitArg ? parseInt(limitArg.split('=')[1], 10) : undefined,
@@ -159,7 +167,7 @@ async function readNdjson<T>(path: string): Promise<T[]> {
 }
 
 /** Embed every taxonomy row with `model` and cache the vectors at `outputPath`. */
-async function generateTaxonomyVectors(model: string, outputPath: string): Promise<TaxonomyVector[]> {
+async function generateTaxonomyVectors(model: string, dimensions: number, outputPath: string): Promise<TaxonomyVector[]> {
 	console.log(`No cached taxonomy vectors for ${model} — embedding ${TAXONOMY_TSV_PATH} now (one-time)...`);
 	const tsvContent = await readFile(TAXONOMY_TSV_PATH, 'utf-8');
 	const rows = parseTaxonomyTsv(tsvContent);
@@ -171,7 +179,7 @@ async function generateTaxonomyVectors(model: string, outputPath: string): Promi
 	for (const row of rows) {
 		const values = await embedText(`${row.name}: ${row.description}`, {
 			model,
-			dimensions: EMBEDDING_DIMENSIONS,
+			dimensions,
 			accountId: CLOUDFLARE_ACCOUNT_ID,
 			apiToken: CLOUDFLARE_API_TOKEN,
 		});
@@ -199,14 +207,14 @@ async function generateTaxonomyVectors(model: string, outputPath: string): Promi
 }
 
 /** Load taxonomy vectors for `model`, generating and caching them first if needed. */
-async function loadTaxonomyVectors(model: string): Promise<TaxonomyVector[]> {
+async function loadTaxonomyVectors(model: string, dimensions: number): Promise<TaxonomyVector[]> {
 	const cachedPath = taxonomyVectorsPathForModel(model);
 	if (fs.existsSync(cachedPath)) {
 		console.log(`Using cached taxonomy vectors from ${cachedPath}`);
 		return readNdjson<TaxonomyVector>(cachedPath);
 	}
 
-	return generateTaxonomyVectors(model, cachedPath);
+	return generateTaxonomyVectors(model, dimensions, cachedPath);
 }
 
 /** Nearest taxonomy vectors by cosine similarity, best first, capped at `topN`. */
@@ -278,14 +286,14 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 
-	const { model, topN, minScore, limit } = parseArgs();
+	const { model, dimensions, topN, minScore, limit } = parseArgs();
 	const outputPath = outputPathForModel(model);
 	const summaryPath = summaryPathForModel(model);
 
-	console.log(`Model: ${model}`);
+	console.log(`Model: ${model} (${dimensions}d)`);
 	console.log(`Top-N: ${topN}, min score: ${minScore}`);
 
-	const taxonomyVectors = await loadTaxonomyVectors(model);
+	const taxonomyVectors = await loadTaxonomyVectors(model, dimensions);
 	console.log(`Loaded ${taxonomyVectors.length} taxonomy vectors.`);
 
 	let records = await readNdjson<SyntheticRecord>(SYNTHETIC_CONTENT_PATH);
@@ -304,7 +312,7 @@ async function main(): Promise<void> {
 
 			const values = await embedText(text, {
 				model,
-				dimensions: EMBEDDING_DIMENSIONS,
+				dimensions,
 				accountId: CLOUDFLARE_ACCOUNT_ID,
 				apiToken: CLOUDFLARE_API_TOKEN,
 			});

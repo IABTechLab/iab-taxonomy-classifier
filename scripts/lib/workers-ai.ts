@@ -28,6 +28,20 @@ export type EmbedTextOptions = {
 	apiToken: string;
 };
 
+/**
+ * Default Workers AI embedding model + dimensions, shared by seed-taxonomy.ts
+ * and classify-synthetic-data.ts so both scripts' --model=/--dimensions=
+ * defaults stay in sync without duplicating the value.
+ *
+ * @cf/google/embeddinggemma-300m and @cf/baai/bge-base-en-v1.5 — the two
+ * models this project has been run against — both output 768-dimensional
+ * vectors, so 768 is a sane default. Override with --dimensions= if you pass
+ * a --model= that embeds to a different size; a mismatch fails fast (see
+ * embedText below) rather than silently writing bad vectors.
+ */
+export const DEFAULT_EMBEDDING_MODEL = '@cf/google/embeddinggemma-300m';
+export const DEFAULT_EMBEDDING_DIMENSIONS = 768;
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -113,7 +127,7 @@ export async function embedText(text: string, options: EmbedTextOptions): Promis
 		// Fail fast if dimensions don't match — prevents writing bad vectors
 		if (vector.length !== dimensions) {
 			throw new Error(
-				`Model ${model} returned ${vector.length} dimensions, expected ${dimensions}. Check your .env or your Vectorize index config.`,
+				`Model ${model} returned ${vector.length} dimensions, expected ${dimensions}. Check your --dimensions= or your Vectorize index config.`,
 			);
 		}
 
