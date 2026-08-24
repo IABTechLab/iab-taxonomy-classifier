@@ -13,11 +13,7 @@ node_modules/
 
 # Generated data (seed script output)
 data/content-taxonomy-3.1-vectors.ndjson
-data/content-taxonomy-3.1-vectors.*.ndjson
-!data/content-taxonomy-3.1-vectors.cf-google-embeddinggemma-300m.ndjson
 data/synthetic-content.failures.ndjson
-data/synthetic-content.classified.*.ndjson
-!data/synthetic-content.classified.cf-google-embeddinggemma-300m.ndjson
 
 # Build output
 dist/

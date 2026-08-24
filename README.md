@@ -148,7 +148,7 @@ Output is written to `data/synthetic-content.classified.<model-slug>.ndjson`, on
 
 Notes:
 
-- **Taxonomy embeddings are cached per model.** If `--model=` matches `EMBEDDING_MODEL` in `.env` and `data/content-taxonomy-3.1-vectors.ndjson` already exists, that file is reused as-is. Otherwise the script embeds `data/content-taxonomy-3.1.tsv` once for that model and caches the result to `data/content-taxonomy-3.1-vectors.<model-slug>.ndjson` (gitignored) — later runs with the same model reuse the cache instantly.
+- **Taxonomy embeddings are cached per model.** If `--model=` matches `EMBEDDING_MODEL` in `.env` and `data/content-taxonomy-3.1-vectors.ndjson` already exists, that file is reused as-is. Otherwise the script embeds `data/content-taxonomy-3.1.tsv` once for that model and caches the result to `data/content-taxonomy-3.1-vectors.<model-slug>.ndjson` — later runs with the same model reuse the cache instantly. These per-model caches (and the `synthetic-content.classified.*.ndjson` results) aren't gitignored, so commit them if you want the results available without re-running the embedding pass.
 - **The default min-score (0.3) is calibrated for `embeddinggemma-300m`**, whose cosine scores run lower than `bge-base-en-v1.5`'s (see the constant's comment in the script). Re-tune `--min-score=` if you switch models — a threshold tuned for one embedding model's score distribution won't transfer to another.
 - Requires the same `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` as the seed script.
 
