@@ -8,7 +8,14 @@
     "start": "wrangler dev",
     "test": "vitest",
     "cf-typegen": "wrangler types",
-    "seed-taxonomy": "tsx scripts/seed-taxonomy.ts"
+    "seed-taxonomy": "tsx scripts/seed-taxonomy.ts",
+    "generate:synthetic": "tsx scripts/generate-synthetic-data.ts",
+    "clean:synthetic": "rm -f data/synthetic-content.ndjson data/synthetic-content.failures.ndjson",
+    "summarize:synthetic": "tsx scripts/summarize-synthetic-data.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.70.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.12.4",

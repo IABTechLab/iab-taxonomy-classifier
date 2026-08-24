@@ -45,6 +45,77 @@ Log in to Cloudflare (first time only):
 npx wrangler login
 ```
 
+### Configure environment variables
+
+Copy `.env.example` to `.env` and fill in your credentials:
+
+```bash
+cp .env.example .env
+```
+
+| Variable | Description |
+|---|---|
+| `CLOUDFLARE_ACCOUNT_ID` | Your Cloudflare account ID |
+| `CLOUDFLARE_API_TOKEN` | API token with Workers AI + Vectorize permissions |
+| `EMBEDDING_MODEL` | Workers AI embedding model (e.g. `@cf/baai/bge-base-en-v1.5`) |
+| `EMBEDDING_DIMENSIONS` | Must match your Vectorize index dimensions (`768`) |
+| `ANTHROPIC_API_KEY` | Only needed for [generating synthetic sample content](#generate-synthetic-sample-content) — get one from the [Anthropic Console](https://console.anthropic.com/settings/keys) |
+
+### Generate synthetic sample content
+
+For training or evaluating a content classifier, `scripts/generate-synthetic-data.ts` calls the Anthropic API (Claude Haiku 4.5) once per taxonomy category to generate one fictional publisher webpage sample — a `title`, `body`, fictional `publisher_name`, and a short list of `keywords` summarizing the content — that should classify under that exact category. Output is written as NDJSON to `data/synthetic-content.ndjson`.
+
+This is independent of the Workers AI / Vectorize setup below — it reads categories straight from `data/content-taxonomy-3.1-vectors.ndjson` and only needs `ANTHROPIC_API_KEY` set in `.env`, so it's the first thing most people run.
+
+Try it on a few categories first:
+
+```bash
+npm run generate:synthetic -- --limit=5
+```
+
+Then run it for all ~700 categories:
+
+```bash
+npm run generate:synthetic
+```
+
+By default this uses Claude Haiku 4.5 — it's the cheapest and fastest Claude model, which fits this job well since each request is short, templated, and doesn't need deep reasoning; generating all ~700 samples costs well under $1. Override the model with `--model=` (or set `ANTHROPIC_MODEL` in `.env`) if you want higher-nuance samples at a higher cost:
+
+```bash
+npm run generate:synthetic -- --model=claude-sonnet-5
+```
+
+Notes:
+
+- **Resumable** — re-running skips categories already present in `data/synthetic-content.ndjson`, so an interrupted run can just be re-run.
+- **Fails fast on a bad API key or unknown model** — the script checks both before starting, and aborts immediately (instead of looping through every category) if Anthropic rejects it mid-run.
+- **Sensitive categories** (e.g. under "Sensitive Topics", "Crime", "War and Conflicts") are generated as neutral, non-graphic, journalistic-style content — topically relevant for classification without graphic depiction. Refusals and errors are logged to `data/synthetic-content.failures.ndjson` rather than retried.
+- Runs 8 requests concurrently by default (see `CONCURRENCY` in the script).
+
+To start over:
+
+```bash
+npm run clean:synthetic
+```
+
+Removes `data/synthetic-content.ndjson` and `data/synthetic-content.failures.ndjson` so the next run regenerates everything from scratch. The taxonomy files are untouched.
+
+#### Summarize the generated samples
+
+`scripts/summarize-synthetic-data.ts` prints one line per record in `data/synthetic-content.ndjson` — category ID, category name, keywords, and a short snippet of the generated body — so you can eyeball coverage and quality without opening the raw NDJSON.
+
+```bash
+npm run summarize:synthetic
+```
+
+```
+154   Malls & Shopping Centers   [shopping malls, retail expansion, mall renovation]   Westbrook Village Mall announced the grand opening...
+153   Historic Site and Landmark Tours   [historic architecture, renaissance estate, guided tours]   The Greystone Manor, built in 1887, stands as one...
+179   Bars & Restaurants   [gastropub, restaurant opening, craft cocktails]   The Copper Kettle, a highly anticipated new gastropub...
+```
+
+The full run prints one line per generated category (up to ~700) followed by a total count, so pipe it through `less` or redirect to a file if you want to page through it: `npm run summarize:synthetic > data/synthetic-content.summary.txt`.
+
 ### Create the Vectorize indexes
 
 Before running or deploying the worker, create the two [Vectorize](https://developers.cloudflare.com/vectorize/) indexes configured in `wrangler.jsonc`. Index names must match `index_name` for each binding.
@@ -67,22 +138,7 @@ The 768 dimensions match the embedding model used by Workers AI (`@cf/baai/bge-b
 
 The worker needs vector embeddings for every IAB taxonomy category before it can classify anything. A standalone script reads the official taxonomy TSV, calls the Workers AI API to generate embeddings, and writes them to `data/content-taxonomy-3.1-vectors.ndjson`.
 
-**1. Configure environment variables**
-
-Copy `.env.example` to `.env` and fill in your Cloudflare credentials and embedding settings:
-
-```bash
-cp .env.example .env
-```
-
-| Variable | Description |
-|---|---|
-| `CLOUDFLARE_ACCOUNT_ID` | Your Cloudflare account ID |
-| `CLOUDFLARE_API_TOKEN` | API token with Workers AI + Vectorize permissions |
-| `EMBEDDING_MODEL` | Workers AI embedding model (e.g. `@cf/baai/bge-base-en-v1.5`) |
-| `EMBEDDING_DIMENSIONS` | Must match your Vectorize index dimensions (`768`) |
-
-**2. Run the seed script**
+**1. Run the seed script**
 
 The taxonomy file is already included at `data/content-taxonomy-3.1.tsv` (IAB Content Taxonomy v3.1). Run:
 
@@ -94,7 +150,7 @@ The script processes each taxonomy row sequentially, embedding the category name
 
 > **Note:** With ~700 categories and one API call per row, processed sequentially, the full run takes several minutes. Rate-limit responses (HTTP 429) are retried automatically; any rows that still fail after retries are listed in the summary at the end.
 
-**3. Load embeddings into Vectorize**
+**2. Load embeddings into Vectorize**
 
 Once `data/content-taxonomy-3.1-vectors.ndjson` has been generated, insert the vectors into the `iab-content-taxonomy` index:
 
@@ -168,11 +224,15 @@ npx wrangler deploy
 data/
   content-taxonomy-3.1.tsv   # Official IAB Content Taxonomy v3.1 (input)
   content-taxonomy-3.1-vectors.ndjson  # Generated taxonomy embeddings (output from seed script)
+  synthetic-content.ndjson             # Generated synthetic samples (output from generate-synthetic-data script)
+  synthetic-content.failures.ndjson    # Categories that failed/were refused during generation
 docs/
   pipeline-seed.svg           # Diagram: taxonomy seeding pipeline
   pipeline-classify.svg       # Diagram: classify request pipeline
 scripts/
   seed-taxonomy.ts            # Embeds taxonomy categories via Workers AI
+  generate-synthetic-data.ts  # Generates synthetic publisher content per taxonomy category via Claude
+  summarize-synthetic-data.ts # Prints a one-line-per-record summary of the generated synthetic content
 src/
   index.ts                    # Worker entry point — request routing
   scrape.ts                   # Homepage fetch and HTML text extraction (HTMLRewriter)
