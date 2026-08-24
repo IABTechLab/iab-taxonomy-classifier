@@ -1,0 +1,45 @@
+/**
+ * For more details on how to configure Wrangler, refer to:
+ * https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "iab-taxonomy-classifier",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-07-11",
+	"observability": {
+		"enabled": true
+	},
+	"upload_source_maps": true,
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"ai": {
+		"binding": "AI"
+	},
+	"vectorize": [
+	    {
+		    "binding": "TAXONOMY_INDEX",
+		    "index_name": "iab-content-taxonomy",
+			"remote": true
+		},
+		{
+			"binding": "CONTENT_INDEX",
+			"index_name": "classified-content",
+			"remote": true
+		}
+	],
+	"vars": {
+		"EMBEDDING_MODEL": "@cf/baai/bge-base-en-v1.5"
+	},
+	/**
+	 * Static Assets
+	 * https://developers.cloudflare.com/workers/static-assets/binding/
+	 */
+	// "assets": {  "directory": "./public/",  "binding": "ASSETS" }
+	/**
+	 * Service Bindings (communicate between multiple Workers)
+	 * https://developers.cloudflare.com/workers/wrangler/configuration/#service-bindings
+	 */
+	// "services": [  {   "binding": "MY_SERVICE",   "service": "my-service"  } ]
+}

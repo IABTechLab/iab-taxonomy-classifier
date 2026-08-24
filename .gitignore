@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Wrangler
+.wrangler/
+.dev.vars
+.dev.vars.*
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Generated data (seed script output)
+data/content-taxonomy-3.1-vectors.ndjson
+
+# Build output
+dist/
+
+# Test / coverage
+coverage/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# TypeScript
+*.tsbuildinfo
