@@ -13,6 +13,8 @@ node_modules/
 
 # Generated data (seed script output)
 data/content-taxonomy-3.1-vectors.ndjson
+data/synthetic-content.ndjson
+data/synthetic-content.failures.ndjson
 
 # Build output
 dist/
