@@ -3,8 +3,9 @@ import fs from "node:fs";
 import Anthropic, { APIError, AuthenticationError, PermissionDeniedError } from "@anthropic-ai/sdk";
 import { z } from "zod";
 import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
+import { parseTaxonomyTsv, type TaxonomyRow } from "./lib/workers-ai";
 
-const TAXONOMY_PATH = "data/content-taxonomy-3.1-vectors.ndjson";
+const TAXONOMY_TSV_PATH = "data/content-taxonomy-3.1.tsv";
 const OUTPUT_PATH = "data/synthetic-content.ndjson";
 const FAILURES_PATH = "data/synthetic-content.failures.ndjson";
 const DEFAULT_MODEL = "claude-haiku-4-5";
@@ -22,14 +23,6 @@ const SyntheticContentSchema = z.object({
     .array(z.string())
     .describe("3-6 short keywords/phrases summarizing the content, lowercase"),
 });
-
-interface TaxonomyEntry {
-  id: string;
-  name: string;
-  parentId: string;
-  tier1: string;
-  description: string;
-}
 
 interface SyntheticRecord {
   category_id: string;
@@ -53,19 +46,8 @@ Rules:
 - Keywords should be short (1-3 words each) and reflect what the content is actually about, not the taxonomy category label verbatim.
 - Output only the requested structured fields.`;
 
-function readTaxonomy(): TaxonomyEntry[] {
-  const lines = fs.readFileSync(TAXONOMY_PATH, "utf-8").split("\n").filter(Boolean);
-  return lines.map((line) => {
-    const obj = JSON.parse(line);
-    const m = obj.metadata ?? {};
-    return {
-      id: obj.id,
-      name: m.name ?? "",
-      parentId: m.parentId ?? "",
-      tier1: m.tier1 ?? "",
-      description: m.description ?? m.name ?? "",
-    };
-  });
+function readTaxonomy(): TaxonomyRow[] {
+  return parseTaxonomyTsv(fs.readFileSync(TAXONOMY_TSV_PATH, "utf-8"));
 }
 
 function readDoneIds(): Set<string> {
@@ -101,7 +83,7 @@ async function pMap<T, R>(
 
 async function generateForCategory(
   client: Anthropic,
-  entry: TaxonomyEntry,
+  entry: TaxonomyRow,
   model: string,
 ): Promise<SyntheticRecord | null> {
   const response = await client.beta.messages.parse({

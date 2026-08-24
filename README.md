@@ -65,7 +65,7 @@ cp .env.example .env
 
 For training or evaluating a content classifier, `scripts/generate-synthetic-data.ts` calls the Anthropic API (Claude Haiku 4.5) once per taxonomy category to generate one fictional publisher webpage sample — a `title`, `body`, fictional `publisher_name`, and a short list of `keywords` summarizing the content — that should classify under that exact category. Output is written as NDJSON to `data/synthetic-content.ndjson`.
 
-This is independent of the Workers AI / Vectorize setup below — it reads categories straight from `data/content-taxonomy-3.1-vectors.ndjson` and only needs `ANTHROPIC_API_KEY` set in `.env`, so it's the first thing most people run.
+This is independent of the Workers AI / Vectorize setup below — it reads categories straight from `data/content-taxonomy-3.1.tsv` and only needs `ANTHROPIC_API_KEY` set in `.env`, so it's the first thing most people run.
 
 Try it on a few categories first:
 
@@ -148,7 +148,7 @@ Output is written to `data/synthetic-content.classified.<model-slug>.ndjson`, on
 
 Notes:
 
-- **Taxonomy embeddings are cached per model.** If `--model=` matches `EMBEDDING_MODEL` in `.env` and `data/content-taxonomy-3.1-vectors.ndjson` already exists, that file is reused as-is. Otherwise the script embeds `data/content-taxonomy-3.1.tsv` once for that model and caches the result to `data/content-taxonomy-3.1-vectors.<model-slug>.ndjson` — later runs with the same model reuse the cache instantly. These per-model caches (and the `synthetic-content.classified.*.ndjson` results) aren't gitignored, so commit them if you want the results available without re-running the embedding pass.
+- **Taxonomy embeddings are cached per model**, at `data/content-taxonomy-3.1-vectors.<model-slug>.ndjson` — the same file `seed-taxonomy.ts` writes (see [Seed the taxonomy](#seed-the-taxonomy)). If it already exists for the requested `--model=`, it's reused as-is; otherwise this script embeds `data/content-taxonomy-3.1.tsv` once for that model and caches the result there, so later runs with the same model skip straight to classifying. Neither these caches nor the `synthetic-content.classified.*.ndjson` results are gitignored — commit them if you want the results available without re-running the embedding pass.
 - **The default min-score (0.3) is calibrated for `embeddinggemma-300m`**, whose cosine scores run lower than `bge-base-en-v1.5`'s (see the constant's comment in the script). Re-tune `--min-score=` if you switch models — a threshold tuned for one embedding model's score distribution won't transfer to another.
 - Requires the same `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` as the seed script.
 
@@ -172,7 +172,7 @@ The 768 dimensions match the embedding model used by Workers AI (`@cf/baai/bge-b
 
 ### Seed the taxonomy
 
-The worker needs vector embeddings for every IAB taxonomy category before it can classify anything. A standalone script reads the official taxonomy TSV, calls the Workers AI API to generate embeddings, and writes them to `data/content-taxonomy-3.1-vectors.ndjson`.
+The worker needs vector embeddings for every IAB taxonomy category before it can classify anything. A standalone script reads the official taxonomy TSV, calls the Workers AI API (using `EMBEDDING_MODEL` from `.env`) to generate embeddings, and writes them to `data/content-taxonomy-3.1-vectors.<model-slug>.ndjson` — named after the model so vectors from different embedding models never collide (e.g. `data/content-taxonomy-3.1-vectors.cf-baai-bge-base-en-v1-5.ndjson` for the default `@cf/baai/bge-base-en-v1.5`).
 
 **1. Run the seed script**
 
@@ -182,16 +182,16 @@ The taxonomy file is already included at `data/content-taxonomy-3.1.tsv` (IAB Co
 npx tsx scripts/seed-taxonomy.ts
 ```
 
-The script processes each taxonomy row sequentially, embedding the category name and tier path (e.g. `Amusement and Theme Parks: Attractions > Amusement and Theme Parks`). Progress is logged every 50 rows. Output is written incrementally to `data/content-taxonomy-3.1-vectors.ndjson` as newline-delimited JSON, so a partial run isn't lost if the script is interrupted.
+The script processes each taxonomy row sequentially, embedding the category name and tier path (e.g. `Amusement and Theme Parks: Attractions > Amusement and Theme Parks`). Progress is logged every 50 rows. Output is written incrementally to `data/content-taxonomy-3.1-vectors.<model-slug>.ndjson` as newline-delimited JSON, so a partial run isn't lost if the script is interrupted. This file isn't gitignored — commit it once generated so others don't have to re-run the embedding pass.
 
 > **Note:** With ~700 categories and one API call per row, processed sequentially, the full run takes several minutes. Rate-limit responses (HTTP 429) are retried automatically; any rows that still fail after retries are listed in the summary at the end.
 
 **2. Load embeddings into Vectorize**
 
-Once `data/content-taxonomy-3.1-vectors.ndjson` has been generated, insert the vectors into the `iab-content-taxonomy` index:
+Once `data/content-taxonomy-3.1-vectors.<model-slug>.ndjson` has been generated, insert the vectors into the `iab-content-taxonomy` index:
 
 ```bash
-npx wrangler vectorize insert iab-content-taxonomy --file=data/content-taxonomy-3.1-vectors.ndjson
+npx wrangler vectorize insert iab-content-taxonomy --file=data/content-taxonomy-3.1-vectors.cf-baai-bge-base-en-v1-5.ndjson
 ```
 
 Verify the import:
@@ -259,8 +259,7 @@ npx wrangler deploy
 ```
 data/
   content-taxonomy-3.1.tsv   # Official IAB Content Taxonomy v3.1 (input)
-  content-taxonomy-3.1-vectors.ndjson       # Generated taxonomy embeddings for EMBEDDING_MODEL (output from seed script)
-  content-taxonomy-3.1-vectors.*.ndjson     # Per-model taxonomy embedding caches (output from classify-synthetic-data script)
+  content-taxonomy-3.1-vectors.*.ndjson     # Per-model taxonomy embeddings (output from seed-taxonomy.ts and classify-synthetic-data.ts)
   synthetic-content.ndjson                  # Generated synthetic samples (output from generate-synthetic-data script)
   synthetic-content.failures.ndjson         # Categories that failed/were refused during generation
   synthetic-content.classified.*.ndjson     # Per-model classification results (output from classify-synthetic-data script)

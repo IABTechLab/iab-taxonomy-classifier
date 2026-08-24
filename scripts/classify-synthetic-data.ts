@@ -15,7 +15,7 @@
 import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import fs from 'node:fs';
 import dotenv from 'dotenv';
-import { parseTaxonomyTsv, embedText, modelSlug, cosineSimilarity } from './lib/workers-ai';
+import { parseTaxonomyTsv, embedText, modelSlug, taxonomyVectorsPathForModel, cosineSimilarity } from './lib/workers-ai';
 
 // ---------------------------------------------------------------------------
 // Fixed paths (not configurable via environment variables)
@@ -23,12 +23,6 @@ import { parseTaxonomyTsv, embedText, modelSlug, cosineSimilarity } from './lib/
 
 const SYNTHETIC_CONTENT_PATH = 'data/synthetic-content.ndjson';
 const TAXONOMY_TSV_PATH = 'data/content-taxonomy-3.1.tsv';
-
-// Legacy path written by seed-taxonomy.ts — reused as-is when the requested
-// model matches EMBEDDING_MODEL, so switching models doesn't force a
-// re-embed of the taxonomy that's already been seeded.
-const LEGACY_TAXONOMY_VECTORS_PATH = 'data/content-taxonomy-3.1-vectors.ndjson';
-const LEGACY_EMBEDDING_MODEL = '@cf/baai/bge-base-en-v1.5';
 
 const DEFAULT_MODEL = '@cf/google/embeddinggemma-300m';
 const DEFAULT_TOP_N = 5;
@@ -114,10 +108,6 @@ function outputPathForModel(model: string): string {
 	return `data/synthetic-content.classified.${modelSlug(model)}.ndjson`;
 }
 
-function taxonomyVectorsPathForModel(model: string): string {
-	return `data/content-taxonomy-3.1-vectors.${modelSlug(model)}.ndjson`;
-}
-
 async function readNdjson<T>(path: string): Promise<T[]> {
 	const raw = await readFile(path, 'utf-8');
 	return raw
@@ -166,15 +156,8 @@ async function generateTaxonomyVectors(model: string, outputPath: string): Promi
 	return vectors;
 }
 
-/** Load taxonomy vectors for `model`, reusing a cache or the legacy seed output where possible. */
+/** Load taxonomy vectors for `model`, generating and caching them first if needed. */
 async function loadTaxonomyVectors(model: string): Promise<TaxonomyVector[]> {
-	const legacyModel = process.env.EMBEDDING_MODEL || LEGACY_EMBEDDING_MODEL;
-
-	if (model === legacyModel && fs.existsSync(LEGACY_TAXONOMY_VECTORS_PATH)) {
-		console.log(`Using existing taxonomy vectors from ${LEGACY_TAXONOMY_VECTORS_PATH} (model ${model})`);
-		return readNdjson<TaxonomyVector>(LEGACY_TAXONOMY_VECTORS_PATH);
-	}
-
 	const cachedPath = taxonomyVectorsPathForModel(model);
 	if (fs.existsSync(cachedPath)) {
 		console.log(`Using cached taxonomy vectors from ${cachedPath}`);

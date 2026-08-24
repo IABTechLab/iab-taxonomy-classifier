@@ -131,6 +131,16 @@ export function modelSlug(model: string): string {
 		.replace(/^-+|-+$/g, '');
 }
 
+/**
+ * Path for the cached taxonomy vector NDJSON for a given model. Shared by
+ * seed-taxonomy.ts (which writes it) and classify-synthetic-data.ts (which
+ * reads it, generating it first if missing), so the two scripts always agree
+ * on where a given model's vectors live.
+ */
+export function taxonomyVectorsPathForModel(model: string): string {
+	return `data/content-taxonomy-3.1-vectors.${modelSlug(model)}.ndjson`;
+}
+
 /** Cosine similarity between two equal-length vectors, in [-1, 1]. */
 export function cosineSimilarity(a: number[], b: number[]): number {
 	let dot = 0;

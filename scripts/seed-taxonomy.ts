@@ -8,14 +8,13 @@
 
 import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import dotenv from 'dotenv';
-import { parseTaxonomyTsv, embedText as embedTextWithOptions } from './lib/workers-ai';
+import { parseTaxonomyTsv, embedText as embedTextWithOptions, taxonomyVectorsPathForModel } from './lib/workers-ai';
 
 // ---------------------------------------------------------------------------
 // Fixed paths (not configurable via environment variables)
 // ---------------------------------------------------------------------------
 
 const TAXONOMY_TSV_PATH = 'data/content-taxonomy-3.1.tsv';
-const OUTPUT_NDJSON_PATH = 'data/content-taxonomy-3.1-vectors.ndjson';
 
 // ---------------------------------------------------------------------------
 // Load .env before reading process.env
@@ -27,6 +26,10 @@ const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL as string;
 const EMBEDDING_DIMENSIONS = Number(process.env.EMBEDDING_DIMENSIONS);
 const CLOUDFLARE_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID as string;
 const CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN as string;
+
+// Named by model so vectors from different embedding models never collide —
+// matches the cache naming in scripts/classify-synthetic-data.ts.
+const OUTPUT_NDJSON_PATH = taxonomyVectorsPathForModel(EMBEDDING_MODEL);
 
 // ---------------------------------------------------------------------------
 // Type definitions
