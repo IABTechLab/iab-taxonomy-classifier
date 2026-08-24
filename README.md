@@ -79,10 +79,16 @@ Then run it for all ~700 categories:
 npm run generate:synthetic
 ```
 
+By default this uses Claude Haiku 4.5. Override the model with `--model=` (or set `ANTHROPIC_MODEL` in `.env`):
+
+```bash
+npm run generate:synthetic -- --model=claude-sonnet-5
+```
+
 Notes:
 
 - **Resumable** — re-running skips categories already present in `data/synthetic-content.ndjson`, so an interrupted run can just be re-run.
-- **Fails fast on a bad API key** — the script checks the key before starting, and aborts immediately (instead of looping through every category) if Anthropic rejects it mid-run.
+- **Fails fast on a bad API key or unknown model** — the script checks both before starting, and aborts immediately (instead of looping through every category) if Anthropic rejects it mid-run.
 - **Sensitive categories** (e.g. under "Sensitive Topics", "Crime", "War and Conflicts") are generated as neutral, non-graphic, journalistic-style content — topically relevant for classification without graphic depiction. Refusals and errors are logged to `data/synthetic-content.failures.ndjson` rather than retried.
 - Runs 8 requests concurrently by default (see `CONCURRENCY` in the script).
 

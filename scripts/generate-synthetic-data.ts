@@ -7,7 +7,7 @@ import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 const TAXONOMY_PATH = "data/content-taxonomy-3.1-vectors.ndjson";
 const OUTPUT_PATH = "data/synthetic-content.ndjson";
 const FAILURES_PATH = "data/synthetic-content.failures.ndjson";
-const MODEL = "claude-haiku-4-5";
+const DEFAULT_MODEL = "claude-haiku-4-5";
 const CONCURRENCY = 8;
 
 const SyntheticContentSchema = z.object({
@@ -97,9 +97,10 @@ async function pMap<T, R>(
 async function generateForCategory(
   client: Anthropic,
   entry: TaxonomyEntry,
+  model: string,
 ): Promise<SyntheticRecord | null> {
   const response = await client.beta.messages.parse({
-    model: MODEL,
+    model,
     max_tokens: 1024,
     system: SYSTEM_PROMPT,
     messages: [
@@ -137,10 +138,10 @@ function isFatalAuthError(err: unknown): err is APIError {
   return err instanceof AuthenticationError || err instanceof PermissionDeniedError;
 }
 
-async function assertApiKeyWorks(client: Anthropic): Promise<void> {
+async function assertApiKeyWorks(client: Anthropic, model: string): Promise<void> {
   try {
     await client.messages.create({
-      model: MODEL,
+      model,
       max_tokens: 1,
       messages: [{ role: "user", content: "hi" }],
     });
@@ -148,6 +149,10 @@ async function assertApiKeyWorks(client: Anthropic): Promise<void> {
     if (isFatalAuthError(err)) {
       console.error(`Anthropic rejected the API key: ${err.message}`);
       console.error("Fix ANTHROPIC_API_KEY in .env and re-run.");
+      process.exit(1);
+    }
+    if (err instanceof Anthropic.NotFoundError) {
+      console.error(`Unknown model "${model}": ${err.message}`);
       process.exit(1);
     }
     // Any other error (rate limit, transient 5xx, etc.) isn't a reason to
@@ -166,13 +171,16 @@ async function main() {
   const limitArg = process.argv.find((a) => a.startsWith("--limit="));
   const limit = limitArg ? parseInt(limitArg.split("=")[1], 10) : undefined;
 
+  const modelArg = process.argv.find((a) => a.startsWith("--model="));
+  const model = modelArg ? modelArg.split("=")[1] : process.env.ANTHROPIC_MODEL || DEFAULT_MODEL;
+
   const taxonomy = readTaxonomy();
   const doneIds = readDoneIds();
   let pending = taxonomy.filter((e) => !doneIds.has(e.id));
   if (limit) pending = pending.slice(0, limit);
 
   console.log(
-    `${taxonomy.length} categories total, ${doneIds.size} already done, ${pending.length} to generate.`,
+    `${taxonomy.length} categories total, ${doneIds.size} already done, ${pending.length} to generate using ${model}.`,
   );
 
   if (pending.length === 0) {
@@ -181,7 +189,7 @@ async function main() {
   }
 
   const client = new Anthropic();
-  await assertApiKeyWorks(client);
+  await assertApiKeyWorks(client, model);
 
   const outStream = fs.createWriteStream(OUTPUT_PATH, { flags: "a" });
   const failStream = fs.createWriteStream(FAILURES_PATH, { flags: "a" });
@@ -191,7 +199,7 @@ async function main() {
 
   await pMap(pending, CONCURRENCY, async (entry) => {
     try {
-      const record = await generateForCategory(client, entry);
+      const record = await generateForCategory(client, entry, model);
       if (record) {
         outStream.write(JSON.stringify(record) + "\n");
       } else {
