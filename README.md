@@ -79,7 +79,7 @@ Then run it for all ~700 categories:
 npm run generate:synthetic
 ```
 
-By default this uses Claude Haiku 4.5. Override the model with `--model=` (or set `ANTHROPIC_MODEL` in `.env`):
+By default this uses Claude Haiku 4.5 — it's the cheapest and fastest Claude model, which fits this job well since each request is short, templated, and doesn't need deep reasoning; generating all ~700 samples costs well under $1. Override the model with `--model=` (or set `ANTHROPIC_MODEL` in `.env`) if you want higher-nuance samples at a higher cost:
 
 ```bash
 npm run generate:synthetic -- --model=claude-sonnet-5
