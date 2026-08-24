@@ -4,6 +4,14 @@
  * scripts/classify-synthetic-data.ts so both stay consistent as models change.
  */
 
+import dotenv from 'dotenv';
+
+// Loaded here (rather than left to each importing script) so DEFAULT_EMBEDDING_MODEL/
+// DEFAULT_EMBEDDING_DIMENSIONS below see .env values regardless of import order —
+// ES module imports are fully evaluated before the importing script's own
+// top-level code (including its own dotenv.config() call) runs.
+dotenv.config();
+
 export type TaxonomyRow = {
 	id: string;
 	parentId: string;
@@ -33,14 +41,21 @@ export type EmbedTextOptions = {
  * and classify-synthetic-data.ts so both scripts' --model=/--dimensions=
  * defaults stay in sync without duplicating the value.
  *
+ * Read from EMBEDDING_MODEL/EMBEDDING_DIMENSIONS in .env when set, so a repo
+ * or contributor can pin a default model without passing --model=/
+ * --dimensions= on every invocation — both flags still override this per run.
+ *
  * @cf/google/embeddinggemma-300m and @cf/baai/bge-base-en-v1.5 — the two
  * models this project has been run against — both output 768-dimensional
- * vectors, so 768 is a sane default. Override with --dimensions= if you pass
- * a --model= that embeds to a different size; a mismatch fails fast (see
- * embedText below) rather than silently writing bad vectors.
+ * vectors, so 768 is a sane fallback when EMBEDDING_DIMENSIONS isn't set.
+ * Whatever the effective dimensions end up being, a mismatch against what
+ * the model actually returns fails fast (see embedText below) rather than
+ * silently writing bad vectors.
  */
-export const DEFAULT_EMBEDDING_MODEL = '@cf/google/embeddinggemma-300m';
-export const DEFAULT_EMBEDDING_DIMENSIONS = 768;
+export const DEFAULT_EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || '@cf/google/embeddinggemma-300m';
+export const DEFAULT_EMBEDDING_DIMENSIONS = process.env.EMBEDDING_DIMENSIONS
+	? Number(process.env.EMBEDDING_DIMENSIONS)
+	: 768;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
