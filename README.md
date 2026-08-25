@@ -288,7 +288,7 @@ Accuracy from the [offline evaluation](#classify-the-generated-samples-offline-e
 
 | Model | Top-1 accuracy | Top-5 accuracy | Correct match kept (min-score) |
 |---|---|---|---|
-| Qwen3-Embedding-0.6B | *pending* | *pending* | *pending* |
+| Qwen3-Embedding-0.6B | 70.3% | 91.1% | 68.0% (@0.3) |
 | BGE-M3 | 65.9% | 88.8% | 88.8% (@0.3) |
 
 **768 dimensions**
@@ -301,7 +301,7 @@ Accuracy from the [offline evaluation](#classify-the-generated-samples-offline-e
 - **Top-1/Top-5 accuracy** (`accuracy.top1Rate`/`accuracy.topNRate` in the summary JSON) is the embedding model's raw discriminative power — whether each sample's own ground-truth category is its single best match, or anywhere in its top-5, ranked across *all* taxonomy categories, independent of `--min-score=`.
 - **Correct match kept** (`coverage.recordsWithCorrectMatchKeptRate`) is measured at the `--min-score=` shown in parentheses — how often the ground-truth category survives the confidence filter actually applied to output, which varies by model since score distributions aren't comparable across models (see [Why cosine similarity](#why-cosine-similarity)).
 - bge-base-en-v1.5 and embeddinggemma-300m aren't among the six models from [Embedding models](#embedding-models) above — they were evaluated in earlier work and are kept here as the existing 768d baseline for comparison.
-- Qwen3-Embedding-0.6B's row will be filled in once its evaluation run completes.
+- Qwen3-Embedding-0.6B has the best raw top-1/top-5 accuracy of any model tested so far, but its "correct match kept" rate (68.0%) trails its own top-1 rate (70.3%) more than the other models do — at the default 0.3 min-score, 23% of records get *no* match at all (`recordsWithAnyMatchRate` 77.0%), meaning Qwen3's cosine scores need their own threshold calibration rather than reusing 0.3 as-is (see the min-score note under [Classify the generated samples](#classify-the-generated-samples-offline-evaluation)).
 
 ## Project structure
 
