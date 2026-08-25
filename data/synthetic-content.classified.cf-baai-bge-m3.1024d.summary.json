@@ -1,0 +1,21 @@
+{
+  "model": "@cf/baai/bge-m3",
+  "generatedAt": "2026-08-25T07:00:01.330Z",
+  "topN": 5,
+  "minScore": 0.3,
+  "totalRecords": 704,
+  "classified": 704,
+  "skippedEmbeddingErrors": 0,
+  "accuracy": {
+    "top1Correct": 464,
+    "top1Rate": 0.6590909090909091,
+    "topNCorrect": 625,
+    "topNRate": 0.8877840909090909
+  },
+  "coverage": {
+    "recordsWithAnyMatch": 704,
+    "recordsWithAnyMatchRate": 1,
+    "recordsWithCorrectMatchKept": 625,
+    "recordsWithCorrectMatchKeptRate": 0.8877840909090909
+  }
+}

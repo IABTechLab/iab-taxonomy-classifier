@@ -12,7 +12,6 @@
  */
 
 import { classifyHomepage } from './classify';
-import { scrapeHomepage } from './scrape';
 
 export default {
 	async fetch(request, env, ctx): Promise<Response> {
@@ -27,22 +26,6 @@ export default {
 
 			try {
 				const result = await classifyHomepage(target, env);
-				return Response.json(result);
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				return Response.json({ error: message, url: target }, { status: 502 });
-			}
-		}
-
-		// TEMPORARY: local scraper testing only — remove or gate behind an env check before production deploy.
-		if (request.method === 'GET' && pathname === '/debug-scrape') {
-			const target = searchParams.get('url');
-			if (!target) {
-				return new Response('Missing ?url= query parameter', { status: 400 });
-			}
-
-			try {
-				const result = await scrapeHomepage(target);
 				return Response.json(result);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);

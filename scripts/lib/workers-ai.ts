@@ -161,13 +161,18 @@ export function modelSlug(model: string): string {
 }
 
 /**
- * Path for the cached taxonomy vector NDJSON for a given model. Shared by
- * seed-taxonomy.ts (which writes it) and classify-synthetic-data.ts (which
- * reads it, generating it first if missing), so the two scripts always agree
- * on where a given model's vectors live.
+ * Path for the cached taxonomy vector NDJSON for a given model + dimensions.
+ * Shared by seed-taxonomy.ts (which writes it) and classify-synthetic-data.ts
+ * (which reads it, generating it first if missing), so the two scripts always
+ * agree on where a given model/dimensions pair's vectors live.
+ *
+ * Dimensions are part of the filename (not just the model) because several of
+ * these models support Matryoshka Representation Learning — the same model
+ * can be truncated to different vector sizes, and vectors at different sizes
+ * are not comparable, so each size needs its own cache file.
  */
-export function taxonomyVectorsPathForModel(model: string): string {
-	return `data/content-taxonomy-3.1-vectors.${modelSlug(model)}.ndjson`;
+export function taxonomyVectorsPathForModel(model: string, dimensions: number): string {
+	return `data/content-taxonomy-3.1-vectors.${modelSlug(model)}.${dimensions}d.ndjson`;
 }
 
 /** Cosine similarity between two equal-length vectors, in [-1, 1]. */
