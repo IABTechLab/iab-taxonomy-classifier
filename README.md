@@ -1,21 +1,18 @@
 # IAB Taxonomy Classifier
 
-A [Cloudflare Workers](https://developers.cloudflare.com/workers/) service that classifies website homepages using the [IAB Tech Lab Content Taxonomy](https://iabtechlab.com/standards/content-taxonomy/). The worker fetches a URL, embeds its content with [Workers AI](https://developers.cloudflare.com/workers-ai/), and returns the closest matching IAB categories via [Vectorize](https://developers.cloudflare.com/vectorize/) similarity search.
+A toolkit for embedding the [IAB Tech Lab Content Taxonomy](https://iabtechlab.com/standards/content-taxonomy/) with [Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/) and evaluating which embedding model classifies content into it most accurately, before committing to one for production use.
 
 ## How it works
 
 Classification here isn't rule-based keyword matching — it's semantic similarity between vector embeddings.
 
-**1. Taxonomy categories are embedded once, ahead of time.** Every category in the IAB Content Taxonomy (name + tier hierarchy, e.g. `"Amusement and Theme Parks: Attractions > Amusement and Theme Parks"`) is converted into a 768-dimensional vector using a Workers AI embedding model, and stored in a Vectorize index (`TAXONOMY_INDEX`). This is a one-time step (see [Seed the taxonomy](#seed-the-taxonomy)) — it only needs to be redone if the taxonomy changes or the embedding model changes.
+**1. Taxonomy categories are embedded once per model.** Every category in the IAB Content Taxonomy (name + tier hierarchy, e.g. `"Amusement and Theme Parks: Attractions > Amusement and Theme Parks"`) is converted into a vector using a Workers AI embedding model, and cached to disk (see [Seed the taxonomy](#seed-the-taxonomy)) — optionally also loaded into a [Vectorize](https://developers.cloudflare.com/vectorize/) index (`TAXONOMY_INDEX`) for future use. This only needs to be redone if the taxonomy changes or a new embedding model is under evaluation.
 
-**2. A homepage is scraped and embedded the same way.** When you classify a URL, the worker fetches the page, extracts its title, meta description, headings, and body text (via the native `HTMLRewriter` API, stripping scripts/styles/nav noise), and embeds that combined text using the *same* embedding model — so both taxonomy categories and page content live in the same vector space and can be meaningfully compared.
+**2. Synthetic ground-truth content is generated per category.** For every taxonomy category, a fictional publisher webpage sample (`title` + `body`) that should classify under that exact category is generated once (see [Generate synthetic sample content](#generate-synthetic-sample-content)) — giving every embedding model under test the same known-correct answers to be scored against.
 
-**3. The page's vector is compared against every taxonomy category.** Cosine similarity between the page's embedding and each stored category embedding produces a similarity score: the smaller the angle between two vectors, the more semantically similar they are — see [Why cosine similarity](#why-cosine-similarity) below for what that means and why it's the right metric here. The top 5 nearest categories are returned as `allMatches`; those clearing a similarity threshold are additionally surfaced as `confidentMatches`.
+**3. Each candidate embedding model is scored against that ground truth.** A sample's `title` + `body` is embedded with the same model used to embed the taxonomy, then compared against every cached taxonomy vector via cosine similarity — see [Why cosine similarity](#why-cosine-similarity) below for what that means and why it's the right metric here. Whether the sample's own known category comes back as the top match (or anywhere in the top-N) measures that model's raw classification accuracy (see [Classify the generated samples](#classify-the-generated-samples-offline-evaluation)).
 
-**4. The page's own vector is stored for reuse.** Beyond just returning a classification, the page's embedding is upserted into a second index (`CONTENT_INDEX`), keyed by a deterministic hash of the normalized URL. This means:
-   - Re-classifying the same URL updates its existing entry rather than duplicating it.
-   - If the taxonomy is later expanded or re-seeded, previously scraped content can be re-classified without re-fetching the page.
-   - Stored content vectors can eventually be compared against each other (e.g. "find pages similar to this one"), independent of taxonomy matching.
+**4. Accuracy is compared across models.** Each run's summary — top-1/top-N accuracy, and how much of that survives a confidence threshold — is written out per model (and per vector size, since some models support multiple dimensions), so models can be ranked against each other (see [Embedding models](#embedding-models)).
 
 ### Why cosine similarity
 
@@ -24,10 +21,10 @@ Embeddings turn text into a vector of numbers — a point in a many-dimensional 
 - **Cosine similarity** measures the *angle* between two vectors: `cos(θ) = (A · B) / (‖A‖ × ‖B‖)`. It ignores each vector's length entirely — only the direction matters.
 - Euclidean distance and raw dot product, by contrast, are both sensitive to vector *magnitude* — and embedding magnitude tends to track things like text length or the model's confidence rather than topic, which would skew results (a longer article isn't "more about" its topic than a short one).
 
-That makes cosine similarity the standard choice for comparing text embeddings, and it's why both places this project compares vectors use it:
+That makes cosine similarity the standard choice for comparing text embeddings, and it's why this project uses it consistently:
 
-- **The `TAXONOMY_INDEX`/`CONTENT_INDEX` Vectorize indexes** are created with `--metric=cosine` (see [Create the Vectorize indexes](#create-the-vectorize-indexes)) — Cloudflare computes it server-side for every `query()` call the worker makes.
-- **`scripts/classify-synthetic-data.ts`** doesn't touch Vectorize at all — it computes cosine similarity itself, in memory, via `cosineSimilarity()` in [`scripts/lib/workers-ai.ts`](scripts/lib/workers-ai.ts), so the offline evaluation matches what the live worker does without needing a deployed index.
+- **`scripts/classify-synthetic-data.ts`** is what actually runs these comparisons — it doesn't touch Vectorize at all, computing cosine similarity itself, in memory, via `cosineSimilarity()` in [`scripts/lib/workers-ai.ts`](scripts/lib/workers-ai.ts).
+- **The `TAXONOMY_INDEX` Vectorize index** is created with `--metric=cosine` too (see [Create the Vectorize index](#create-the-vectorize-index)), so a future consumer's `query()` calls would compute it the same way Cloudflare-side, consistent with the offline evaluation above.
 
 **Both vectors must come from the same model — and the same dimensionality.** Cosine similarity assumes the two vectors already live in the same coordinate space — that "dimension 37" means the same kind of thing for both. That's true for two vectors from the *same* model at the *same* vector size, since it always maps text through the same learned geometry, but not across models — each one learns its own internal geometry during training, so nothing forces "dimension 37" in `bge-base-en-v1.5` to align with "dimension 37" in `embeddinggemma-300m`, even though both happen to output 768 numbers. It's also not true across dimensions of the *same* Matryoshka-capable model: a vector truncated to 256 dims isn't in the same space as that model's native 1024-dim output. Comparing mismatched vectors still produces *a number* — nothing crashes, since the lengths match — but that number is meaningless, not just "less accurate." This is why taxonomy vectors are cached per model *and* per dimensions rather than in one shared file (`taxonomyVectorsPathForModel()` → `data/content-taxonomy-3.1-vectors.<model-slug>.<dimensions>d.ndjson`), and why `seed-taxonomy.ts` and `classify-synthetic-data.ts` both take a single `--model=`/`--dimensions=` pair that applies to *both* sides of the comparison, rather than letting content and taxonomy embeddings drift to different models or sizes independently.
 
@@ -37,13 +34,9 @@ In practice, scores for these embedding models stay positive rather than spannin
 
 ### Diagrams
 
-**Taxonomy index seeding** (one-time, run before the worker can classify anything):
+**Taxonomy seeding** (run once per model under evaluation):
 
 <img src="docs/pipeline-seed.svg" alt="Diagram: taxonomy TSV parsed, embedded via Workers AI, written to NDJSON, then inserted into the Vectorize taxonomy index" width="500">
-
-**Classify request** (runs per URL, once the taxonomy index is seeded):
-
-<img src="docs/pipeline-classify.svg" alt="Diagram: homepage URL scraped, embedded, compared against seeded taxonomy vectors, with matches returned and the content vector stored for reuse" width="680">
 
 **Offline synthetic-data classification** (evaluates model accuracy — see [Classify the generated samples](#classify-the-generated-samples-offline-evaluation)):
 
@@ -85,27 +78,19 @@ cp .env.example .env
 
 `EMBEDDING_MODEL`/`EMBEDDING_DIMENSIONS` only set the *default* for `scripts/seed-taxonomy.ts` and `scripts/classify-synthetic-data.ts` (see [Seed the taxonomy](#seed-the-taxonomy) and [Classify the generated samples](#classify-the-generated-samples-offline-evaluation)) — each script's `--model=`/`--dimensions=` flags override it per run, so you can classify against several models without editing `.env` between runs. The deployed worker's model is configured separately, via its own `EMBEDDING_MODEL` in `wrangler.jsonc`.
 
-### Create the Vectorize indexes
+### Create the Vectorize index
 
-Before running or deploying the worker, create the two [Vectorize](https://developers.cloudflare.com/vectorize/) indexes configured in `wrangler.jsonc`. Index names must match `index_name` for each binding.
-
-**IAB content taxonomy** (`TAXONOMY_INDEX`) — stores embeddings for IAB taxonomy categories:
+This step is optional for the offline evaluation workflow below, which reads cached taxonomy vectors straight from disk — create this if you want the seeded vectors also loaded into a live [Vectorize](https://developers.cloudflare.com/vectorize/) index (e.g. for a future classification endpoint). The index name must match `index_name` for the `TAXONOMY_INDEX` binding in `wrangler.jsonc`:
 
 ```bash
 npx wrangler vectorize create iab-content-taxonomy --dimensions=768 --metric=cosine
 ```
 
-**Classified content** (`CONTENT_INDEX`) — stores embeddings for previously classified page content:
-
-```bash
-npx wrangler vectorize create classified-content --dimensions=768 --metric=cosine
-```
-
-The 768 dimensions match the embedding model used by Workers AI (`@cf/baai/bge-base-en-v1.5`). Both indexes must share the same dimensions and metric as each other, since page vectors and taxonomy vectors are compared directly against one another.
+Use `--dimensions=` matching whichever embedding model you plan to seed with (see [Seed the taxonomy](#seed-the-taxonomy)) — `768` matches the default, `@cf/baai/bge-base-en-v1.5`.
 
 ### Seed the taxonomy
 
-The worker needs vector embeddings for every IAB taxonomy category before it can classify anything. A standalone script reads the official taxonomy TSV, calls the Workers AI API to generate embeddings, and writes them to `data/content-taxonomy-3.1-vectors.<model-slug>.<dimensions>d.ndjson` — named after both the model and its vector size so vectors from different embedding models, or the same Matryoshka-capable model at a different size, never collide.
+Every embedding model under evaluation needs its own vector embeddings for the full IAB taxonomy before it can be scored (see [Classify the generated samples](#classify-the-generated-samples-offline-evaluation)). A standalone script reads the official taxonomy TSV, calls the Workers AI API to generate embeddings, and writes them to `data/content-taxonomy-3.1-vectors.<model-slug>.<dimensions>d.ndjson` — named after both the model and its vector size so vectors from different embedding models, or the same Matryoshka-capable model at a different size, never collide.
 
 **1. Run the seed script**
 
@@ -145,33 +130,7 @@ The vector count should match the number of rows in the taxonomy file (minus any
 npx wrangler dev
 ```
 
-The worker runs at `http://localhost:8787`. Vectorize bindings are configured with `remote: true` in `wrangler.jsonc`, so `AI` and both Vectorize indexes reach your real Cloudflare account even in local dev — only the request routing runs locally.
-
-### Classify a URL
-
-```bash
-curl "http://localhost:8787/classify?url=https://example.com" | jq
-```
-
-**Response**
-
-```json
-{
-  "url": "https://example.com",
-  "title": "Example Domain",
-  "allMatches": [
-    { "id": "605", "score": 0.615, "name": "Shareware and Freeware", "tier1": "Technology & Computing" }
-  ],
-  "confidentMatches": [],
-  "contentId": "100680ad546ce6a577f42f52df33b4cfdca756859e664b8d7de329b150d09ce9"
-}
-```
-
-- `allMatches` — top 5 nearest taxonomy categories by cosine similarity.
-- `confidentMatches` — subset of `allMatches` clearing the similarity threshold (currently 0.65 — under evaluation against real-world scores).
-- `contentId` — deterministic hash of the normalized URL, used as the vector ID in `CONTENT_INDEX`; re-classifying the same URL overwrites rather than duplicates.
-
-On failure (unreachable URL, non-HTML content, timeout), the route responds with `502` and an `{ error, url }` body.
+The worker runs at `http://localhost:8787`. The `TAXONOMY_INDEX` Vectorize binding is configured with `remote: true` in `wrangler.jsonc`, so it reaches your real Cloudflare account even in local dev. There's no classification endpoint on the worker itself yet — classification quality is currently evaluated entirely offline (see [Classify the generated samples](#classify-the-generated-samples-offline-evaluation)); this scaffold is here for whatever live endpoint gets built on top of the seeded taxonomy index next.
 
 ### Deploy
 
@@ -236,7 +195,7 @@ The full run prints one line per generated category (up to ~700) followed by a t
 
 #### Classify the generated samples (offline evaluation)
 
-`scripts/classify-synthetic-data.ts` evaluates classification quality without touching a URL, Vectorize, or the deployed worker at all. For every record in `data/synthetic-content.ndjson` it:
+`scripts/classify-synthetic-data.ts` evaluates classification quality without touching Vectorize or the deployed worker at all. For every record in `data/synthetic-content.ndjson` it:
 
 1. Embeds the record's `title` + `body` with a Workers AI embedding model (via direct REST calls, same as the seed script).
 2. Compares that vector against the IAB taxonomy embeddings using cosine similarity, computed locally in-memory.
@@ -356,7 +315,6 @@ data/
   synthetic-content.classified.*.summary.json   # Per-model, per-dimension accuracy summary (output from classify-synthetic-data script)
 docs/
   pipeline-seed.svg               # Diagram: taxonomy seeding pipeline
-  pipeline-classify.svg           # Diagram: classify request pipeline
   pipeline-classify-synthetic.svg # Diagram: offline synthetic-data classification pipeline
   cosine-similarity.svg           # Diagram: what cosine similarity measures and why it's used
 scripts/
@@ -366,9 +324,7 @@ scripts/
   summarize-synthetic-data.ts # Prints a one-line-per-record summary of the generated synthetic content
   classify-synthetic-data.ts  # Offline: embeds synthetic samples, matches against taxonomy embeddings, scores accuracy
 src/
-  index.ts                    # Worker entry point — request routing
-  scrape.ts                   # Homepage fetch and HTML text extraction (HTMLRewriter)
-  classify.ts                 # Scrape → embed → query taxonomy → store content vector
+  index.ts                    # Worker entry point (currently a placeholder — see Local development)
 wrangler.jsonc                 # Cloudflare Worker configuration
 ```
 
