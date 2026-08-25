@@ -10,12 +10,28 @@ Classification here isn't rule-based keyword matching — it's semantic similari
 
 **2. A homepage is scraped and embedded the same way.** When you classify a URL, the worker fetches the page, extracts its title, meta description, headings, and body text (via the native `HTMLRewriter` API, stripping scripts/styles/nav noise), and embeds that combined text using the *same* embedding model — so both taxonomy categories and page content live in the same vector space and can be meaningfully compared.
 
-**3. The page's vector is compared against every taxonomy category.** Cosine similarity between the page's embedding and each stored category embedding produces a score from 0–1: the closer two vectors point in the same direction, the more semantically similar they are. The top 5 nearest categories are returned as `allMatches`; those clearing a similarity threshold are additionally surfaced as `confidentMatches`.
+**3. The page's vector is compared against every taxonomy category.** Cosine similarity between the page's embedding and each stored category embedding produces a similarity score: the smaller the angle between two vectors, the more semantically similar they are — see [Why cosine similarity](#why-cosine-similarity) below for what that means and why it's the right metric here. The top 5 nearest categories are returned as `allMatches`; those clearing a similarity threshold are additionally surfaced as `confidentMatches`.
 
 **4. The page's own vector is stored for reuse.** Beyond just returning a classification, the page's embedding is upserted into a second index (`CONTENT_INDEX`), keyed by a deterministic hash of the normalized URL. This means:
    - Re-classifying the same URL updates its existing entry rather than duplicating it.
    - If the taxonomy is later expanded or re-seeded, previously scraped content can be re-classified without re-fetching the page.
    - Stored content vectors can eventually be compared against each other (e.g. "find pages similar to this one"), independent of taxonomy matching.
+
+### Why cosine similarity
+
+Embeddings turn text into a vector of numbers — a point in a many-dimensional space where nearby points mean similar meaning. The question "how similar are these two pieces of text?" becomes "how similar are these two vectors?", and there's more than one way to answer that:
+
+- **Cosine similarity** measures the *angle* between two vectors: `cos(θ) = (A · B) / (‖A‖ × ‖B‖)`. It ignores each vector's length entirely — only the direction matters.
+- Euclidean distance and raw dot product, by contrast, are both sensitive to vector *magnitude* — and embedding magnitude tends to track things like text length or the model's confidence rather than topic, which would skew results (a longer article isn't "more about" its topic than a short one).
+
+That makes cosine similarity the standard choice for comparing text embeddings, and it's why both places this project compares vectors use it:
+
+- **The `TAXONOMY_INDEX`/`CONTENT_INDEX` Vectorize indexes** are created with `--metric=cosine` (see [Create the Vectorize indexes](#create-the-vectorize-indexes)) — Cloudflare computes it server-side for every `query()` call the worker makes.
+- **`scripts/classify-synthetic-data.ts`** doesn't touch Vectorize at all — it computes cosine similarity itself, in memory, via `cosineSimilarity()` in [`scripts/lib/workers-ai.ts`](scripts/lib/workers-ai.ts), so the offline evaluation matches what the live worker does without needing a deployed index.
+
+In practice, scores for these embedding models stay positive rather than spanning the full −1 to 1 range (embeddinggemma-300m's ranged roughly 0.24–0.66 across the synthetic dataset; bge-base-en-v1.5's ran higher, ~0.6–0.71) — which is why `classify-synthetic-data.ts`'s min-score default is [calibrated per model](#classify-the-generated-samples-offline-evaluation) rather than reusing a single fixed threshold.
+
+<img src="docs/cosine-similarity.svg" alt="Diagram: two embedding vectors from a common origin with a small angle between them, the cosine similarity formula, and a scale from -1 to 1 showing where a highly similar example (0.978) falls" width="560">
 
 ### Diagrams
 
@@ -26,6 +42,10 @@ Classification here isn't rule-based keyword matching — it's semantic similari
 **Classify request** (runs per URL, once the taxonomy index is seeded):
 
 <img src="docs/pipeline-classify.svg" alt="Diagram: homepage URL scraped, embedded, compared against seeded taxonomy vectors, with matches returned and the content vector stored for reuse" width="680">
+
+**Offline synthetic-data classification** (evaluates model accuracy — see [Classify the generated samples](#classify-the-generated-samples-offline-evaluation)):
+
+<img src="docs/pipeline-classify-synthetic.svg" alt="Diagram: each synthetic content record is embedded, compared via in-memory cosine similarity against cached taxonomy vectors, filtered to top-N matches clearing a minimum score, and written out; after every record, matches are scored against the known ground-truth category into a run summary" width="500">
 
 ## Prerequisites
 
@@ -127,6 +147,10 @@ The full run prints one line per generated category (up to ~700) followed by a t
 3. Keeps the top-N nearest categories that clear a configurable minimum score.
 4. Writes one NDJSON line per record with the record's known (ground-truth) category alongside the matches found, so you can measure how often the classifier's top match — or any of its top-N — agrees with the category the sample was generated for.
 5. Writes a single JSON summary scoring the whole run against that ground truth.
+
+<img src="docs/pipeline-classify-synthetic.svg" alt="Diagram: each synthetic content record is embedded, compared via in-memory cosine similarity against cached taxonomy vectors, filtered to top-N matches clearing a minimum score, and written out; after every record, matches are scored against the known ground-truth category into a run summary" width="480">
+
+See [Why cosine similarity](#why-cosine-similarity) for what that comparison actually measures and why it's the right one for embeddings.
 
 ```bash
 npm run classify:synthetic
@@ -294,8 +318,10 @@ data/
   synthetic-content.classified.*.ndjson         # Per-model classification results (output from classify-synthetic-data script)
   synthetic-content.classified.*.summary.json   # Per-model accuracy summary (output from classify-synthetic-data script)
 docs/
-  pipeline-seed.svg           # Diagram: taxonomy seeding pipeline
-  pipeline-classify.svg       # Diagram: classify request pipeline
+  pipeline-seed.svg               # Diagram: taxonomy seeding pipeline
+  pipeline-classify.svg           # Diagram: classify request pipeline
+  pipeline-classify-synthetic.svg # Diagram: offline synthetic-data classification pipeline
+  cosine-similarity.svg           # Diagram: what cosine similarity measures and why it's used
 scripts/
   lib/workers-ai.ts           # Shared Workers AI REST + taxonomy TSV parsing helpers
   seed-taxonomy.ts            # Embeds taxonomy categories via Workers AI
