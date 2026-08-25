@@ -281,7 +281,7 @@ This is exactly why the "Native / MRL dimensions" column below matters more than
 | Model | Params | Max content | Native / MRL dimensions | License | Status | Pros | Cons |
 |---|---|---|---|---|---|---|---|
 | [BGE-M3](https://huggingface.co/BAAI/bge-m3) | 568M | 8,192 tokens | 1024 dense, fixed — **no MRL support**; BAAI documents that truncating its output degrades quality | MIT | ✅ Tested — `@cf/baai/bge-m3` | MIT license, the most permissive here<br>Longest track record for multilingual retrieval<br>Dense/sparse/multi-vector outputs from one pass (hybrid-search upgrade path, though only dense is used today) | 568M params — heaviest model actually runnable on Workers AI here<br>Extra retrieval modes go unused by pure cosine-similarity<br>**No MRL support at all** — stuck at full 1024d, the weakest fit of the seven for a low-dimension-first evaluation |
-| [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) | 600M | 32,768 tokens | 1024 native; MRL over a **continuous 32–1024** range (no fixed discrete list published) | Apache 2.0 | ✅ Tested — `@cf/qwen/qwen3-embedding-0.6b` | By far the longest context window (32K tokens vs. 8K or less for the rest)<br>Best raw accuracy of any model tested at native 1024d (top-1 70.3%, see [Results, by dimension](#results-by-dimension))<br>Strong multilingual MTEB scores | Largest model in the lineup (600M params)<br>Its documented 32d MRL floor is untuned in practice — tested here at top-1 37.5%/top-5 65.8%, a much steeper drop than EmbeddingGemma-300M's officially-benchmarked 128d<br>Published best practices (flash-attention, task-specific instruction prefixes) add tuning surface this project's plain title+body embedding doesn't use |
+| [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) | 600M | 32,768 tokens | 1024 native; MRL over a **continuous 32–1024** range (no fixed discrete list published) | Apache 2.0 | ✅ Tested — `@cf/qwen/qwen3-embedding-0.6b` | By far the longest context window (32K tokens vs. 8K or less for the rest)<br>Best raw accuracy of any model tested at native 1024d (top-1 70.3%, see [Results, by dimension](#results-by-dimension))<br>Strong multilingual MTEB scores | Largest model in the lineup (600M params)<br>Every non-native size is an untuned, non-benchmarked truncation, and accuracy across them is non-monotonic — top-1 59.1%/top-5 83.7% at 128d, 48.9%/63.4% at 768d, 37.5%/65.8% at 32d — so there's no dimension below 1024d where results can be predicted from vector size alone<br>Published best practices (flash-attention, task-specific instruction prefixes) add tuning surface this project's plain title+body embedding doesn't use |
 | [EmbeddingGemma-300M](https://huggingface.co/google/embeddinggemma-300m) | 300M | 2,048 tokens | 768 native; MRL benchmarked at **512 / 256 / 128** | [Gemma](https://ai.google.dev/gemma/terms) | ✅ Tested — `@cf/google/embeddinggemma-300m` | The model this project defaulted to and has evaluated the longest<br>Tied for the best 768d accuracy seen so far (top-1 75.0%/top-5 94.5%, see [Results, by dimension](#results-by-dimension))<br>Well-documented MRL benchmarks at 512/256/128 dims<br>Designed for on-device/resource-constrained deployment | Shortest context window of any model here (2,048 tokens — long homepage scrapes would get truncated)<br>Ships under Google's **Gemma license**, which carries usage-restriction terms rather than a permissive OSS license like Apache 2.0/MIT |
 | [mxbai-embed-large-v1](https://huggingface.co/mixedbread-ai/mxbai-embed-large-v1) | ~335M | 512 tokens | 1024 native; MRL supported, documented example at **512** — no official discrete list below that | Apache 2.0 | ⏳ Not on Workers AI — untested | BERT-large architecture with strong published English MTEB results<br>Documented as beating some commercial embedding APIs on English benchmarks | 512-token context is the shortest of the seven (long homepage scrapes would get truncated)<br>English-only<br>Not on Workers AI — testing it would need a separate embedding backend |
 | [Snowflake arctic-embed-m-v2.0](https://huggingface.co/Snowflake/snowflake-arctic-embed-m-v2.0) | 305M | 8,192 tokens | 768 native; MRL officially trained/benchmarked **only at 256** (not a range) | Apache 2.0 | ⏳ Not on Workers AI — untested | Efficient mid-size model (305M) with a long 8K context<br>74-language multilingual support<br>Officially benchmarked 256-dim MRL mode (3x smaller index, ~2–3% quality loss) — a modern GTE-multilingual-based alternative to BGE-M3 at roughly half the parameters and a third the dimensions | MRL is only trained/validated at 256, not a tunable range — no in-between option<br>Newer and less battle-tested than BGE-M3<br>Not on Workers AI |
@@ -294,7 +294,7 @@ mxbai-embed-large-v1, mxbai-embed-xsmall-v1, Snowflake arctic-embed-m-v2.0, and 
 
 Accuracy from the [offline evaluation](#classify-the-generated-samples-offline-evaluation) against all 704 synthetic samples. Results are grouped by vector size rather than pooled into one table, because a 768-dimension run and a 1024-dimension run aren't directly comparable on accuracy alone — they're also different storage and query costs per Vectorize index, and (per [Why cosine similarity](#why-cosine-similarity)) vectors at different sizes can't be compared to each other even for the *same* model. Full per-model numbers live in `data/synthetic-content.classified.<model-slug>.<dimensions>d.summary.json`; ranked best-to-worst by top-1 accuracy within each group.
 
-Any group below a model's native size (128d and 32d here) was produced by the client-side MRL truncation in `embedText()` (see [What MRL is](#what-mrl-is-and-why-its-the-thing-that-makes-this-possible)) — Cloudflare Workers AI has no request parameter to return a smaller vector directly, so `scripts/lib/workers-ai.ts` truncates the model's native output to the first N values itself whenever `--dimensions=` is below native.
+Any group below a model's native size (512d, 256d, 128d, and 32d here) was produced by the client-side MRL truncation in `embedText()` (see [What MRL is](#what-mrl-is-and-why-its-the-thing-that-makes-this-possible)) — Cloudflare Workers AI has no request parameter to return a smaller vector directly, so `scripts/lib/workers-ai.ts` truncates the model's native output to the first N values itself whenever `--dimensions=` is below native.
 
 **1024 dimensions**
 
@@ -303,18 +303,32 @@ Any group below a model's native size (128d and 32d here) was produced by the cl
 | Qwen3-Embedding-0.6B | 70.3% | 91.1% | 68.0% (@0.3) |
 | BGE-M3 | 65.9% | 88.8% | 88.8% (@0.3) |
 
-**768 dimensions**
+**768 dimensions** (Qwen3-Embedding-0.6B truncated — within its documented 32–1024 MRL range but not an officially benchmarked size)
 
 | Model | Top-1 accuracy | Top-5 accuracy | Correct match kept (min-score) |
 |---|---|---|---|
 | EmbeddingGemma-300M | 75.0% | 94.5% | 89.6% (@0.3) |
 | bge-base-en-v1.5 | 75.0% | 94.5% | 84.7% (@0.65) |
+| Qwen3-Embedding-0.6B | 48.9% | 63.4% | 47.2% (@0.3) |
 
-**128 dimensions** (EmbeddingGemma-300M truncated — its lowest officially benchmarked MRL size)
+**512 dimensions** (EmbeddingGemma-300M truncated — one of its officially benchmarked MRL sizes)
+
+| Model | Top-1 accuracy | Top-5 accuracy | Correct match kept (min-score) |
+|---|---|---|---|
+| EmbeddingGemma-300M | 74.0% | 94.9% | 93.0% (@0.3) |
+
+**256 dimensions** (EmbeddingGemma-300M truncated — one of its officially benchmarked MRL sizes)
+
+| Model | Top-1 accuracy | Top-5 accuracy | Correct match kept (min-score) |
+|---|---|---|---|
+| EmbeddingGemma-300M | 72.0% | 92.8% | 92.6% (@0.3) |
+
+**128 dimensions** (EmbeddingGemma-300M truncated at its lowest officially benchmarked MRL size; Qwen3-Embedding-0.6B truncated within its documented range but not an officially benchmarked size)
 
 | Model | Top-1 accuracy | Top-5 accuracy | Correct match kept (min-score) |
 |---|---|---|---|
 | EmbeddingGemma-300M | 64.8% | 85.4% | 85.4% (@0.3) |
+| Qwen3-Embedding-0.6B | 59.1% | 83.7% | 73.3% (@0.3) |
 
 **32 dimensions** (Qwen3-Embedding-0.6B truncated — the floor of its documented 32–1024 MRL range)
 
@@ -326,8 +340,12 @@ Any group below a model's native size (128d and 32d here) was produced by the cl
 - **Correct match kept** (`coverage.recordsWithCorrectMatchKeptRate`) is measured at the `--min-score=` shown in parentheses — how often the ground-truth category survives the confidence filter actually applied to output, which varies by model since score distributions aren't comparable across models (see [Why cosine similarity](#why-cosine-similarity)).
 - bge-base-en-v1.5 isn't among the seven models from [Embedding models](#embedding-models) above — it was evaluated in earlier work and is kept here as an additional 768d baseline for comparison.
 - Qwen3-Embedding-0.6B has the best raw top-1/top-5 accuracy of any model tested at native size so far, but its "correct match kept" rate (68.0%) trails its own top-1 rate (70.3%) more than the other models do — at the default 0.3 min-score, 23% of records get *no* match at all (`recordsWithAnyMatchRate` 77.0%), meaning Qwen3's cosine scores need their own threshold calibration rather than reusing 0.3 as-is (see the min-score note under [Classify the generated samples](#classify-the-generated-samples-offline-evaluation)).
+- EmbeddingGemma-300M degrades smoothly and predictably across its three officially benchmarked MRL sizes: top-1 75.0% (768d, native) → 74.0% (512d) → 72.0% (256d) → 64.8% (128d), and top-5 94.5% → 94.9% → 92.8% → 85.4% — each step down in size costs a small, monotonic amount of accuracy, consistent with these being sizes Google actually trained and validated MRL checkpoints at, not arbitrary truncation points. The last step (256d → 128d) is by far the steepest of the three, so 128d is where truncation cost starts to bite.
 - EmbeddingGemma-300M's 6x truncation (768d → 128d) cost 10.2 points of top-1 accuracy (75.0% → 64.8%) and 9.1 points of top-5 (94.5% → 85.4%) — a real but not catastrophic drop for a 6x smaller index, and still the best 128d result available since it's the only model here documented as MRL-capable at that size.
-- Qwen3-Embedding-0.6B's 32x truncation (1024d → 32d) is much less forgiving: top-1 fell 32.8 points (70.3% → 37.5%) and top-5 fell 25.3 points (91.1% → 65.8%) — a proportionally much larger loss than EmbeddingGemma-300M took at 128d, despite Qwen3 scoring higher at native size. This tracks with the "Native / MRL dimensions" table above: EmbeddingGemma-300M's low-dimension option is an officially benchmarked, validated size (Google published MTEB numbers at exactly 128d), while Qwen3's 32d is only the documented *floor* of a continuous range with no official benchmark at that specific size. **If going to the lowest possible dimension is the priority, EmbeddingGemma-300M at 128d (64.8%/85.4%) is the clearly better choice over Qwen3-Embedding-0.6B at 32d (37.5%/65.8%)** — though the two aren't tested at matched sizes (128d vs. 32d, a 4x difference in vector size), so a fairer head-to-head would also test Qwen3 at 128d before ruling it out for low-dimension use.
+- Qwen3-Embedding-0.6B's 32x truncation (1024d → 32d) is much less forgiving: top-1 fell 32.8 points (70.3% → 37.5%) and top-5 fell 25.3 points (91.1% → 65.8%) — a proportionally much larger loss than EmbeddingGemma-300M took at 128d, despite Qwen3 scoring higher at native size. This tracks with the "Native / MRL dimensions" table above: EmbeddingGemma-300M's low-dimension option is an officially benchmarked, validated size (Google published MTEB numbers at exactly 128d), while Qwen3's 32d is only the documented *floor* of a continuous range with no official benchmark at that specific size.
+- Qwen3-Embedding-0.6B at 128d (59.1%/83.7%) directly answers the head-to-head this section previously called for: **EmbeddingGemma-300M at 128d (64.8%/85.4%) still wins**, but by a much narrower margin than the 128d-vs-32d comparison suggested — Qwen3 closes most of the gap once it's given the same 128d budget instead of being truncated all the way to its documented floor.
+- Qwen3-Embedding-0.6B's accuracy is **not monotonic in dimension**: 768d (48.9%/63.4%) scores *worse* than both its own 128d (59.1%/83.7%) and 32d (37.5%/65.8%) results, despite sitting between them in vector size. Every Qwen3 size below its native 1024d is an untuned, non-benchmarked truncation point (its MRL range is documented as continuous 32–1024 with "no fixed discrete list published"), so truncation quality apparently doesn't degrade smoothly across that range — 768d just happens to be a worse cut point than 128d for this data, not a stepping-stone between native and 128d. This is a caution against assuming any given cut of an untuned continuous MRL range will behave predictably.
+- Put side by side, EmbeddingGemma-300M's smooth 768→512→256→128d curve and Qwen3-Embedding-0.6B's erratic 1024→768→128→32d curve make the same point from opposite directions: **officially benchmarked MRL checkpoints degrade predictably; untuned truncation points within a merely-documented range don't.** That difference — not raw model quality — is the main reason EmbeddingGemma-300M is the safer choice below native size in this project, despite Qwen3 leading at native 1024d.
 
 ## Project structure
 

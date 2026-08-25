@@ -1,0 +1,21 @@
+{
+  "model": "@cf/qwen/qwen3-embedding-0.6b",
+  "generatedAt": "2026-08-25T09:50:51.236Z",
+  "topN": 5,
+  "minScore": 0.3,
+  "totalRecords": 704,
+  "classified": 704,
+  "skippedEmbeddingErrors": 0,
+  "accuracy": {
+    "top1Correct": 344,
+    "top1Rate": 0.48863636363636365,
+    "topNCorrect": 446,
+    "topNRate": 0.6335227272727273
+  },
+  "coverage": {
+    "recordsWithAnyMatch": 437,
+    "recordsWithAnyMatchRate": 0.6207386363636364,
+    "recordsWithCorrectMatchKept": 332,
+    "recordsWithCorrectMatchKeptRate": 0.4715909090909091
+  }
+}
