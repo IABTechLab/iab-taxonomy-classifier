@@ -260,7 +260,23 @@ Notes:
 
 The embedding model is pluggable via `--model=`/`EMBEDDING_MODEL` (see [Seed the taxonomy](#seed-the-taxonomy) and [Classify the generated samples](#classify-the-generated-samples-offline-evaluation)), but only models in [Cloudflare Workers AI's catalog](https://developers.cloudflare.com/workers-ai/models/) can actually be used here — `scripts/lib/workers-ai.ts` calls that REST API exclusively. The table below tracks the models under evaluation for this classifier and whether each has been run yet.
 
-Since this project is prioritizing *low*-dimension embeddings (smaller Vectorize indexes, cheaper storage/query cost), the dimensions column below documents each model's actual Matryoshka Representation Learning (MRL) support rather than just its native output size — a model whose only documented low-dimension option is its native size (or that doesn't support MRL at all) isn't a candidate for going low, no matter how good its native-size accuracy is.
+### Why dimension size matters
+
+An embedding vector's size is a number of floats, and every one of those floats has a real, ongoing cost:
+
+- **It has to travel over the wire.** Every embed call sends text in and gets a vector back over HTTP; every classification compares that vector against the taxonomy. A 1024-dimension `float32` vector is 4KB; the same content at 256 dimensions is 1KB — a 4x cut in request/response payload size for every single embed and every comparison, with no code change beyond `--dimensions=`.
+- **It has to be stored.** A Vectorize index holds one vector per taxonomy category (~700 of them) plus one per piece of content ever classified. Storage cost scales directly with vector size, so a 4x smaller vector is a ~4x smaller index.
+- **It has to be searched.** Nearest-neighbor search (whether Vectorize's `query()` or this project's own `cosineSimilarity()`) does one multiply-and-add per dimension for every candidate vector compared. Fewer dimensions means less compute per comparison, which matters more as the taxonomy or the content index grows.
+
+None of that is free, though — a smaller vector generally encodes less nuance, which is why the [Results, by dimension](#results-by-dimension) table below tracks accuracy separately per size rather than assuming smaller is a pure win. The goal is the smallest dimension count that doesn't give up much accuracy, not the smallest dimension count outright.
+
+### What MRL is, and why it's the thing that makes this possible
+
+Most embedding models are trained so that *only* their full native-size output is meaningful — every one of its numbers only makes sense in the context of all the others, so chopping the vector down to fewer dimensions after the fact (naive truncation) throws away information unpredictably and can badly degrade quality. BGE-M3's own docs warn against exactly this: truncating its 1024-dim output is not supported and degrades results (see its row in the table below).
+
+**Matryoshka Representation Learning (MRL)** — named after Russian nesting dolls — is a training technique that fixes this by explicitly optimizing a model so that *every prefix* of its output vector (the first 64 numbers, the first 256, the first 512, ...) is *also* a valid, independently useful embedding on its own, ordered so the most important information comes first. The full-size vector isn't just "more precise" than a truncated one — the truncated ones are smaller dolls nested meaningfully inside it, each one a complete (if less detailed) embedding in its own right. That's what makes it safe to truncate an MRL-trained model's output to fewer dimensions and still get a usable, comparable embedding — something that isn't true of a non-MRL model like BGE-M3.
+
+This is exactly why the "Native / MRL dimensions" column below matters more than a plain "output size" column would: a model can only usefully go low-dimension if it was actually *trained* with MRL for that — and even among MRL models, how many discrete sizes are documented/benchmarked (versus just "MRL is supported, somewhere below native") varies a lot, which is called out per model below.
 
 | Model | Params | Max content | Native / MRL dimensions | License | Status |
 |---|---|---|---|---|---|
