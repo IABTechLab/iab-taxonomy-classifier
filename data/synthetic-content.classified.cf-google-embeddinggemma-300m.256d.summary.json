@@ -1,0 +1,21 @@
+{
+  "model": "@cf/google/embeddinggemma-300m",
+  "generatedAt": "2026-08-25T10:06:40.315Z",
+  "topN": 5,
+  "minScore": 0.3,
+  "totalRecords": 704,
+  "classified": 704,
+  "skippedEmbeddingErrors": 0,
+  "accuracy": {
+    "top1Correct": 507,
+    "top1Rate": 0.7201704545454546,
+    "topNCorrect": 653,
+    "topNRate": 0.9275568181818182
+  },
+  "coverage": {
+    "recordsWithAnyMatch": 704,
+    "recordsWithAnyMatchRate": 1,
+    "recordsWithCorrectMatchKept": 652,
+    "recordsWithCorrectMatchKeptRate": 0.9261363636363636
+  }
+}
