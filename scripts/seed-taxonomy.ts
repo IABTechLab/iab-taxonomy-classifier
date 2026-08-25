@@ -87,9 +87,10 @@ async function main(): Promise<void> {
 	}
 
 	const { model, dimensions } = parseArgs();
-	// Named by model so vectors from different embedding models never collide —
+	// Named by model + dimensions so vectors from different embedding models
+	// (or the same model at a different Matryoshka size) never collide —
 	// matches the cache naming in scripts/classify-synthetic-data.ts.
-	const outputPath = taxonomyVectorsPathForModel(model);
+	const outputPath = taxonomyVectorsPathForModel(model, dimensions);
 
 	console.log(`Model: ${model} (${dimensions}d)`);
 

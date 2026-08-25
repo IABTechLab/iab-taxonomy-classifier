@@ -150,12 +150,12 @@ function parseArgs() {
 	};
 }
 
-function outputPathForModel(model: string): string {
-	return `data/synthetic-content.classified.${modelSlug(model)}.ndjson`;
+function outputPathForModel(model: string, dimensions: number): string {
+	return `data/synthetic-content.classified.${modelSlug(model)}.${dimensions}d.ndjson`;
 }
 
-function summaryPathForModel(model: string): string {
-	return `data/synthetic-content.classified.${modelSlug(model)}.summary.json`;
+function summaryPathForModel(model: string, dimensions: number): string {
+	return `data/synthetic-content.classified.${modelSlug(model)}.${dimensions}d.summary.json`;
 }
 
 async function readNdjson<T>(path: string): Promise<T[]> {
@@ -208,7 +208,7 @@ async function generateTaxonomyVectors(model: string, dimensions: number, output
 
 /** Load taxonomy vectors for `model`, generating and caching them first if needed. */
 async function loadTaxonomyVectors(model: string, dimensions: number): Promise<TaxonomyVector[]> {
-	const cachedPath = taxonomyVectorsPathForModel(model);
+	const cachedPath = taxonomyVectorsPathForModel(model, dimensions);
 	if (fs.existsSync(cachedPath)) {
 		console.log(`Using cached taxonomy vectors from ${cachedPath}`);
 		return readNdjson<TaxonomyVector>(cachedPath);
@@ -287,8 +287,8 @@ async function main(): Promise<void> {
 	}
 
 	const { model, dimensions, topN, minScore, limit } = parseArgs();
-	const outputPath = outputPathForModel(model);
-	const summaryPath = summaryPathForModel(model);
+	const outputPath = outputPathForModel(model, dimensions);
+	const summaryPath = summaryPathForModel(model, dimensions);
 
 	console.log(`Model: ${model} (${dimensions}d)`);
 	console.log(`Top-N: ${topN}, min score: ${minScore}`);

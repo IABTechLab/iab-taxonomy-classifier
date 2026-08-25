@@ -1,21 +1,18 @@
 # IAB Taxonomy Classifier
 
-A [Cloudflare Workers](https://developers.cloudflare.com/workers/) service that classifies website homepages using the [IAB Tech Lab Content Taxonomy](https://iabtechlab.com/standards/content-taxonomy/). The worker fetches a URL, embeds its content with [Workers AI](https://developers.cloudflare.com/workers-ai/), and returns the closest matching IAB categories via [Vectorize](https://developers.cloudflare.com/vectorize/) similarity search.
+A toolkit for embedding the [IAB Tech Lab Content Taxonomy](https://iabtechlab.com/standards/content-taxonomy/) with [Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/) and evaluating which embedding model classifies content into it most accurately, before committing to one for production use.
 
 ## How it works
 
 Classification here isn't rule-based keyword matching — it's semantic similarity between vector embeddings.
 
-**1. Taxonomy categories are embedded once, ahead of time.** Every category in the IAB Content Taxonomy (name + tier hierarchy, e.g. `"Amusement and Theme Parks: Attractions > Amusement and Theme Parks"`) is converted into a 768-dimensional vector using a Workers AI embedding model, and stored in a Vectorize index (`TAXONOMY_INDEX`). This is a one-time step (see [Seed the taxonomy](#seed-the-taxonomy)) — it only needs to be redone if the taxonomy changes or the embedding model changes.
+**1. Taxonomy categories are embedded once per model.** Every category in the IAB Content Taxonomy (name + tier hierarchy, e.g. `"Amusement and Theme Parks: Attractions > Amusement and Theme Parks"`) is converted into a vector using a Workers AI embedding model, and cached to disk (see [Seed the taxonomy](#seed-the-taxonomy)) — optionally also loaded into a [Vectorize](https://developers.cloudflare.com/vectorize/) index (`TAXONOMY_INDEX`) for future use. This only needs to be redone if the taxonomy changes or a new embedding model is under evaluation.
 
-**2. A homepage is scraped and embedded the same way.** When you classify a URL, the worker fetches the page, extracts its title, meta description, headings, and body text (via the native `HTMLRewriter` API, stripping scripts/styles/nav noise), and embeds that combined text using the *same* embedding model — so both taxonomy categories and page content live in the same vector space and can be meaningfully compared.
+**2. Synthetic ground-truth content is generated per category.** For every taxonomy category, a fictional publisher webpage sample (`title` + `body`) that should classify under that exact category is generated once (see [Generate synthetic sample content](#generate-synthetic-sample-content)) — giving every embedding model under test the same known-correct answers to be scored against.
 
-**3. The page's vector is compared against every taxonomy category.** Cosine similarity between the page's embedding and each stored category embedding produces a similarity score: the smaller the angle between two vectors, the more semantically similar they are — see [Why cosine similarity](#why-cosine-similarity) below for what that means and why it's the right metric here. The top 5 nearest categories are returned as `allMatches`; those clearing a similarity threshold are additionally surfaced as `confidentMatches`.
+**3. Each candidate embedding model is scored against that ground truth.** A sample's `title` + `body` is embedded with the same model used to embed the taxonomy, then compared against every cached taxonomy vector via cosine similarity — see [Why cosine similarity](#why-cosine-similarity) below for what that means and why it's the right metric here. Whether the sample's own known category comes back as the top match (or anywhere in the top-N) measures that model's raw classification accuracy (see [Classify the generated samples](#classify-the-generated-samples-offline-evaluation)).
 
-**4. The page's own vector is stored for reuse.** Beyond just returning a classification, the page's embedding is upserted into a second index (`CONTENT_INDEX`), keyed by a deterministic hash of the normalized URL. This means:
-   - Re-classifying the same URL updates its existing entry rather than duplicating it.
-   - If the taxonomy is later expanded or re-seeded, previously scraped content can be re-classified without re-fetching the page.
-   - Stored content vectors can eventually be compared against each other (e.g. "find pages similar to this one"), independent of taxonomy matching.
+**4. Accuracy is compared across models.** Each run's summary — top-1/top-N accuracy, and how much of that survives a confidence threshold — is written out per model (and per vector size, since some models support multiple dimensions), so models can be ranked against each other (see [Embedding models](#embedding-models)).
 
 ### Why cosine similarity
 
@@ -24,12 +21,12 @@ Embeddings turn text into a vector of numbers — a point in a many-dimensional 
 - **Cosine similarity** measures the *angle* between two vectors: `cos(θ) = (A · B) / (‖A‖ × ‖B‖)`. It ignores each vector's length entirely — only the direction matters.
 - Euclidean distance and raw dot product, by contrast, are both sensitive to vector *magnitude* — and embedding magnitude tends to track things like text length or the model's confidence rather than topic, which would skew results (a longer article isn't "more about" its topic than a short one).
 
-That makes cosine similarity the standard choice for comparing text embeddings, and it's why both places this project compares vectors use it:
+That makes cosine similarity the standard choice for comparing text embeddings, and it's why this project uses it consistently:
 
-- **The `TAXONOMY_INDEX`/`CONTENT_INDEX` Vectorize indexes** are created with `--metric=cosine` (see [Create the Vectorize indexes](#create-the-vectorize-indexes)) — Cloudflare computes it server-side for every `query()` call the worker makes.
-- **`scripts/classify-synthetic-data.ts`** doesn't touch Vectorize at all — it computes cosine similarity itself, in memory, via `cosineSimilarity()` in [`scripts/lib/workers-ai.ts`](scripts/lib/workers-ai.ts), so the offline evaluation matches what the live worker does without needing a deployed index.
+- **`scripts/classify-synthetic-data.ts`** is what actually runs these comparisons — it doesn't touch Vectorize at all, computing cosine similarity itself, in memory, via `cosineSimilarity()` in [`scripts/lib/workers-ai.ts`](scripts/lib/workers-ai.ts).
+- **The `TAXONOMY_INDEX` Vectorize index** is created with `--metric=cosine` too (see [Create the Vectorize index](#create-the-vectorize-index)), so a future consumer's `query()` calls would compute it the same way Cloudflare-side, consistent with the offline evaluation above.
 
-**Both vectors must come from the same model.** Cosine similarity assumes the two vectors already live in the same coordinate space — that "dimension 37" means the same kind of thing for both. That's true for two vectors from the *same* model, since it always maps text through the same learned geometry, but not across models: each one learns its own internal geometry during training, so nothing forces "dimension 37" in `bge-base-en-v1.5` to align with "dimension 37" in `embeddinggemma-300m`, even though both happen to output 768 numbers. Comparing across them still produces *a number* — nothing crashes, since the lengths match — but that number is meaningless, not just "less accurate." This is why taxonomy vectors are cached per model rather than in one shared file (`taxonomyVectorsPathForModel()` → `data/content-taxonomy-3.1-vectors.<model-slug>.ndjson`), and why `seed-taxonomy.ts` and `classify-synthetic-data.ts` both take a single `--model=` that applies to *both* sides of the comparison, rather than letting content and taxonomy embeddings drift to different models independently.
+**Both vectors must come from the same model — and the same dimensionality.** Cosine similarity assumes the two vectors already live in the same coordinate space — that "dimension 37" means the same kind of thing for both. That's true for two vectors from the *same* model at the *same* vector size, since it always maps text through the same learned geometry, but not across models — each one learns its own internal geometry during training, so nothing forces "dimension 37" in `bge-base-en-v1.5` to align with "dimension 37" in `embeddinggemma-300m`, even though both happen to output 768 numbers. It's also not true across dimensions of the *same* Matryoshka-capable model: a vector truncated to 256 dims isn't in the same space as that model's native 1024-dim output. Comparing mismatched vectors still produces *a number* — nothing crashes, since the lengths match — but that number is meaningless, not just "less accurate." This is why taxonomy vectors are cached per model *and* per dimensions rather than in one shared file (`taxonomyVectorsPathForModel()` → `data/content-taxonomy-3.1-vectors.<model-slug>.<dimensions>d.ndjson`), and why `seed-taxonomy.ts` and `classify-synthetic-data.ts` both take a single `--model=`/`--dimensions=` pair that applies to *both* sides of the comparison, rather than letting content and taxonomy embeddings drift to different models or sizes independently.
 
 In practice, scores for these embedding models stay positive rather than spanning the full −1 to 1 range (embeddinggemma-300m's ranged roughly 0.24–0.66 across the synthetic dataset; bge-base-en-v1.5's ran higher, ~0.6–0.71) — which is why `classify-synthetic-data.ts`'s min-score default is [calibrated per model](#classify-the-generated-samples-offline-evaluation) rather than reusing a single fixed threshold.
 
@@ -37,13 +34,9 @@ In practice, scores for these embedding models stay positive rather than spannin
 
 ### Diagrams
 
-**Taxonomy index seeding** (one-time, run before the worker can classify anything):
+**Taxonomy seeding** (run once per model under evaluation):
 
 <img src="docs/pipeline-seed.svg" alt="Diagram: taxonomy TSV parsed, embedded via Workers AI, written to NDJSON, then inserted into the Vectorize taxonomy index" width="500">
-
-**Classify request** (runs per URL, once the taxonomy index is seeded):
-
-<img src="docs/pipeline-classify.svg" alt="Diagram: homepage URL scraped, embedded, compared against seeded taxonomy vectors, with matches returned and the content vector stored for reuse" width="680">
 
 **Offline synthetic-data classification** (evaluates model accuracy — see [Classify the generated samples](#classify-the-generated-samples-offline-evaluation)):
 
@@ -85,11 +78,71 @@ cp .env.example .env
 
 `EMBEDDING_MODEL`/`EMBEDDING_DIMENSIONS` only set the *default* for `scripts/seed-taxonomy.ts` and `scripts/classify-synthetic-data.ts` (see [Seed the taxonomy](#seed-the-taxonomy) and [Classify the generated samples](#classify-the-generated-samples-offline-evaluation)) — each script's `--model=`/`--dimensions=` flags override it per run, so you can classify against several models without editing `.env` between runs. The deployed worker's model is configured separately, via its own `EMBEDDING_MODEL` in `wrangler.jsonc`.
 
+### Create the Vectorize index
+
+This step is optional for the offline evaluation workflow below, which reads cached taxonomy vectors straight from disk — create this if you want the seeded vectors also loaded into a live [Vectorize](https://developers.cloudflare.com/vectorize/) index (e.g. for a future classification endpoint). The index name must match `index_name` for the `TAXONOMY_INDEX` binding in `wrangler.jsonc`:
+
+```bash
+npx wrangler vectorize create iab-content-taxonomy --dimensions=768 --metric=cosine
+```
+
+Use `--dimensions=` matching whichever embedding model you plan to seed with (see [Seed the taxonomy](#seed-the-taxonomy)) — `768` matches the default, `@cf/baai/bge-base-en-v1.5`.
+
+### Seed the taxonomy
+
+Every embedding model under evaluation needs its own vector embeddings for the full IAB taxonomy before it can be scored (see [Classify the generated samples](#classify-the-generated-samples-offline-evaluation)). A standalone script reads the official taxonomy TSV, calls the Workers AI API to generate embeddings, and writes them to `data/content-taxonomy-3.1-vectors.<model-slug>.<dimensions>d.ndjson` — named after both the model and its vector size so vectors from different embedding models, or the same Matryoshka-capable model at a different size, never collide.
+
+**1. Run the seed script**
+
+The taxonomy file is already included at `data/content-taxonomy-3.1.tsv` (IAB Content Taxonomy v3.1). Run:
+
+```bash
+npx tsx scripts/seed-taxonomy.ts
+```
+
+```bash
+npx tsx scripts/seed-taxonomy.ts --model=@cf/baai/bge-base-en-v1.5 --dimensions=768
+```
+
+The model and its vector size are `--model=`/`--dimensions=` flags, defaulting to `EMBEDDING_MODEL`/`EMBEDDING_DIMENSIONS` in `.env` if set, otherwise `@cf/google/embeddinggemma-300m` at `768` (the same defaults `classify-synthetic-data.ts` uses, shared via `scripts/lib/workers-ai.ts`). The script processes each taxonomy row sequentially, embedding the category name and tier path (e.g. `Amusement and Theme Parks: Attractions > Amusement and Theme Parks`). Progress is logged every 50 rows. Output is written incrementally to `data/content-taxonomy-3.1-vectors.<model-slug>.<dimensions>d.ndjson` as newline-delimited JSON, so a partial run isn't lost if the script is interrupted. This file isn't gitignored — commit it once generated so others don't have to re-run the embedding pass.
+
+> **Note:** With ~700 categories and one API call per row, processed sequentially, the full run takes several minutes. Rate-limit responses (HTTP 429) are retried automatically; any rows that still fail after retries are listed in the summary at the end.
+
+**2. Load embeddings into Vectorize**
+
+Once `data/content-taxonomy-3.1-vectors.<model-slug>.<dimensions>d.ndjson` has been generated, insert the vectors into the `iab-content-taxonomy` index:
+
+```bash
+npx wrangler vectorize insert iab-content-taxonomy --file=data/content-taxonomy-3.1-vectors.cf-baai-bge-base-en-v1-5.768d.ndjson
+```
+
+Verify the import:
+
+```bash
+npx wrangler vectorize get iab-content-taxonomy
+```
+
+The vector count should match the number of rows in the taxonomy file (minus any that failed after retries).
+
+### Local development
+
+```bash
+npx wrangler dev
+```
+
+The worker runs at `http://localhost:8787`. The `TAXONOMY_INDEX` Vectorize binding is configured with `remote: true` in `wrangler.jsonc`, so it reaches your real Cloudflare account even in local dev. There's no classification endpoint on the worker itself yet — classification quality is currently evaluated entirely offline (see [Classify the generated samples](#classify-the-generated-samples-offline-evaluation)); this scaffold is here for whatever live endpoint gets built on top of the seeded taxonomy index next.
+
+### Deploy
+
+```bash
+npx wrangler deploy
+```
+
 ### Generate synthetic sample content
 
 For training or evaluating a content classifier, `scripts/generate-synthetic-data.ts` calls the Anthropic API (Claude Haiku 4.5) once per taxonomy category to generate one fictional publisher webpage sample — a `title`, `body`, fictional `publisher_name`, and a short list of `keywords` summarizing the content — that should classify under that exact category. Output is written as NDJSON to `data/synthetic-content.ndjson`.
 
-This is independent of the Workers AI / Vectorize setup below — it reads categories straight from `data/content-taxonomy-3.1.tsv` and only needs `ANTHROPIC_API_KEY` set in `.env`, so it's the first thing most people run.
+This is independent of the Workers AI / Vectorize setup above — it reads categories straight from `data/content-taxonomy-3.1.tsv` and only needs `ANTHROPIC_API_KEY` set in `.env`, so you can generate it any time, even before completing that setup.
 
 Try it on a few categories first:
 
@@ -142,7 +195,7 @@ The full run prints one line per generated category (up to ~700) followed by a t
 
 #### Classify the generated samples (offline evaluation)
 
-`scripts/classify-synthetic-data.ts` evaluates classification quality without touching a URL, Vectorize, or the deployed worker at all. For every record in `data/synthetic-content.ndjson` it:
+`scripts/classify-synthetic-data.ts` evaluates classification quality without touching Vectorize or the deployed worker at all. For every record in `data/synthetic-content.ndjson` it:
 
 1. Embeds the record's `title` + `body` with a Workers AI embedding model (via direct REST calls, same as the seed script).
 2. Compares that vector against the IAB taxonomy embeddings using cosine similarity, computed locally in-memory.
@@ -172,13 +225,13 @@ npm run classify:synthetic -- --model=@cf/baai/bge-base-en-v1.5 --top-n=3 --min-
 
 `--model=`/`--dimensions=` default to `EMBEDDING_MODEL`/`EMBEDDING_DIMENSIONS` in `.env` if set, otherwise `@cf/google/embeddinggemma-300m` / `768` (shared with `seed-taxonomy.ts` via [`scripts/lib/workers-ai.ts`](scripts/lib/workers-ai.ts), so both scripts agree without the value being duplicated). 768 covers both models this project has been run against (`embeddinggemma-300m` and `bge-base-en-v1.5`) — override `--dimensions=` if you pick a `--model=` that embeds to a different size; a mismatch fails fast instead of silently writing bad vectors.
 
-Per-record results are written to `data/synthetic-content.classified.<model-slug>.ndjson`, one line per record:
+Per-record results are written to `data/synthetic-content.classified.<model-slug>.<dimensions>d.ndjson`, one line per record:
 
 ```json
 {"taxonomy_id":"179","taxonomy_name":"Bars & Restaurants","matches":[{"id":"179","name":"Bars & Restaurants","score":0.612},{"id":"218","name":"Dining Out","score":0.554}]}
 ```
 
-A single run summary is written alongside it to `data/synthetic-content.classified.<model-slug>.summary.json`:
+A single run summary is written alongside it to `data/synthetic-content.classified.<model-slug>.<dimensions>d.summary.json`:
 
 ```json
 {
@@ -199,129 +252,95 @@ A single run summary is written alongside it to `data/synthetic-content.classifi
 
 Notes:
 
-- **Taxonomy embeddings are cached per model**, at `data/content-taxonomy-3.1-vectors.<model-slug>.ndjson` — the same file `seed-taxonomy.ts` writes (see [Seed the taxonomy](#seed-the-taxonomy)). If it already exists for the requested `--model=`, it's reused as-is; otherwise this script embeds `data/content-taxonomy-3.1.tsv` once for that model and caches the result there, so later runs with the same model skip straight to classifying. Neither these caches nor the `synthetic-content.classified.*.ndjson`/`.summary.json` results are gitignored — commit them if you want the results available without re-running the embedding pass.
+- **Taxonomy embeddings are cached per model *and* dimensions**, at `data/content-taxonomy-3.1-vectors.<model-slug>.<dimensions>d.ndjson` — the same file `seed-taxonomy.ts` writes (see [Seed the taxonomy](#seed-the-taxonomy)). If it already exists for the requested `--model=`/`--dimensions=` pair, it's reused as-is; otherwise this script embeds `data/content-taxonomy-3.1.tsv` once for that pair and caches the result there, so later runs with the same model and dimensions skip straight to classifying. Testing a Matryoshka-capable model at a different vector size (e.g. `--dimensions=256` instead of its native `1024`) builds and caches a separate taxonomy file rather than reusing the native-size one. Neither these caches nor the `synthetic-content.classified.*.ndjson`/`.summary.json` results are gitignored — commit them if you want the results available without re-running the embedding pass.
 - **The default min-score (0.3) is calibrated for `embeddinggemma-300m`**, whose cosine scores run lower than `bge-base-en-v1.5`'s (see the constant's comment in the script). Re-tune `--min-score=` if you switch models — a threshold tuned for one embedding model's score distribution won't transfer to another.
 - Requires the same `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` as the seed script.
 
-### Create the Vectorize indexes
+## Embedding models
 
-Before running or deploying the worker, create the two [Vectorize](https://developers.cloudflare.com/vectorize/) indexes configured in `wrangler.jsonc`. Index names must match `index_name` for each binding.
+The embedding model is pluggable via `--model=`/`EMBEDDING_MODEL` (see [Seed the taxonomy](#seed-the-taxonomy) and [Classify the generated samples](#classify-the-generated-samples-offline-evaluation)), but only models in [Cloudflare Workers AI's catalog](https://developers.cloudflare.com/workers-ai/models/) can actually be used here — `scripts/lib/workers-ai.ts` calls that REST API exclusively. The table below tracks the models under evaluation for this classifier and whether each has been run yet.
 
-**IAB content taxonomy** (`TAXONOMY_INDEX`) — stores embeddings for IAB taxonomy categories:
+### Why dimension size matters
 
-```bash
-npx wrangler vectorize create iab-content-taxonomy --dimensions=768 --metric=cosine
-```
+An embedding vector's size is a number of floats, and every one of those floats has a real, ongoing cost:
 
-**Classified content** (`CONTENT_INDEX`) — stores embeddings for previously classified page content:
+- **It has to travel over the wire.** Every embed call sends text in and gets a vector back over HTTP; every classification compares that vector against the taxonomy. A 1024-dimension `float32` vector is 4KB; the same content at 256 dimensions is 1KB — a 4x cut in request/response payload size for every single embed and every comparison, with no code change beyond `--dimensions=`.
+- **It has to be stored.** A Vectorize index holds one vector per taxonomy category (~700 of them) plus one per piece of content ever classified. Storage cost scales directly with vector size, so a 4x smaller vector is a ~4x smaller index.
+- **It has to be searched.** Nearest-neighbor search (whether Vectorize's `query()` or this project's own `cosineSimilarity()`) does one multiply-and-add per dimension for every candidate vector compared. Fewer dimensions means less compute per comparison, which matters more as the taxonomy or the content index grows.
 
-```bash
-npx wrangler vectorize create classified-content --dimensions=768 --metric=cosine
-```
+None of that is free, though — a smaller vector generally encodes less nuance, which is why the [Results, by dimension](#results-by-dimension) table below tracks accuracy separately per size rather than assuming smaller is a pure win. The goal is the smallest dimension count that doesn't give up much accuracy, not the smallest dimension count outright.
 
-The 768 dimensions match the embedding model used by Workers AI (`@cf/baai/bge-base-en-v1.5`). Both indexes must share the same dimensions and metric as each other, since page vectors and taxonomy vectors are compared directly against one another.
+### What MRL is, and why it's the thing that makes this possible
 
-### Seed the taxonomy
+Most embedding models are trained so that *only* their full native-size output is meaningful — every one of its numbers only makes sense in the context of all the others, so chopping the vector down to fewer dimensions after the fact (naive truncation) throws away information unpredictably and can badly degrade quality. BGE-M3's own docs warn against exactly this: truncating its 1024-dim output is not supported and degrades results (see its row in the table below).
 
-The worker needs vector embeddings for every IAB taxonomy category before it can classify anything. A standalone script reads the official taxonomy TSV, calls the Workers AI API to generate embeddings, and writes them to `data/content-taxonomy-3.1-vectors.<model-slug>.ndjson` — named after the model so vectors from different embedding models never collide.
+**Matryoshka Representation Learning (MRL)** — named after Russian nesting dolls — is a training technique that fixes this by explicitly optimizing a model so that *every prefix* of its output vector (the first 64 numbers, the first 256, the first 512, ...) is *also* a valid, independently useful embedding on its own, ordered so the most important information comes first. The full-size vector isn't just "more precise" than a truncated one — the truncated ones are smaller dolls nested meaningfully inside it, each one a complete (if less detailed) embedding in its own right. That's what makes it safe to truncate an MRL-trained model's output to fewer dimensions and still get a usable, comparable embedding — something that isn't true of a non-MRL model like BGE-M3.
 
-**1. Run the seed script**
+This is exactly why the "Native / MRL dimensions" column below matters more than a plain "output size" column would: a model can only usefully go low-dimension if it was actually *trained* with MRL for that — and even among MRL models, how many discrete sizes are documented/benchmarked (versus just "MRL is supported, somewhere below native") varies a lot, which is called out per model below.
 
-The taxonomy file is already included at `data/content-taxonomy-3.1.tsv` (IAB Content Taxonomy v3.1). Run:
+| Model | Params | Max content | Native / MRL dimensions | License | Status | Pros | Cons |
+|---|---|---|---|---|---|---|---|
+| [BGE-M3](https://huggingface.co/BAAI/bge-m3) | 568M | 8,192 tokens | 1024 dense, fixed — **no MRL support**; BAAI documents that truncating its output degrades quality | MIT | ✅ Tested — `@cf/baai/bge-m3` | MIT license, the most permissive here<br>Longest track record for multilingual retrieval<br>Dense/sparse/multi-vector outputs from one pass (hybrid-search upgrade path, though only dense is used today) | 568M params — heaviest model actually runnable on Workers AI here<br>Extra retrieval modes go unused by pure cosine-similarity<br>**No MRL support at all** — stuck at full 1024d, the weakest fit of the seven for a low-dimension-first evaluation |
+| [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) | 600M | 32,768 tokens | 1024 native; MRL over a **continuous 32–1024** range (no fixed discrete list published) | Apache 2.0 | ✅ Tested — `@cf/qwen/qwen3-embedding-0.6b` | By far the longest context window (32K tokens vs. 8K or less for the rest)<br>Best raw accuracy of any model tested at native 1024d (top-1 70.3%, see [Results, by dimension](#results-by-dimension))<br>Strong multilingual MTEB scores | Largest model in the lineup (600M params)<br>Its documented 32d MRL floor is untuned in practice — tested here at top-1 37.5%/top-5 65.8%, a much steeper drop than EmbeddingGemma-300M's officially-benchmarked 128d<br>Published best practices (flash-attention, task-specific instruction prefixes) add tuning surface this project's plain title+body embedding doesn't use |
+| [EmbeddingGemma-300M](https://huggingface.co/google/embeddinggemma-300m) | 300M | 2,048 tokens | 768 native; MRL benchmarked at **512 / 256 / 128** | [Gemma](https://ai.google.dev/gemma/terms) | ✅ Tested — `@cf/google/embeddinggemma-300m` | The model this project defaulted to and has evaluated the longest<br>Tied for the best 768d accuracy seen so far (top-1 75.0%/top-5 94.5%, see [Results, by dimension](#results-by-dimension))<br>Well-documented MRL benchmarks at 512/256/128 dims<br>Designed for on-device/resource-constrained deployment | Shortest context window of any model here (2,048 tokens — long homepage scrapes would get truncated)<br>Ships under Google's **Gemma license**, which carries usage-restriction terms rather than a permissive OSS license like Apache 2.0/MIT |
+| [mxbai-embed-large-v1](https://huggingface.co/mixedbread-ai/mxbai-embed-large-v1) | ~335M | 512 tokens | 1024 native; MRL supported, documented example at **512** — no official discrete list below that | Apache 2.0 | ⏳ Not on Workers AI — untested | BERT-large architecture with strong published English MTEB results<br>Documented as beating some commercial embedding APIs on English benchmarks | 512-token context is the shortest of the seven (long homepage scrapes would get truncated)<br>English-only<br>Not on Workers AI — testing it would need a separate embedding backend |
+| [Snowflake arctic-embed-m-v2.0](https://huggingface.co/Snowflake/snowflake-arctic-embed-m-v2.0) | 305M | 8,192 tokens | 768 native; MRL officially trained/benchmarked **only at 256** (not a range) | Apache 2.0 | ⏳ Not on Workers AI — untested | Efficient mid-size model (305M) with a long 8K context<br>74-language multilingual support<br>Officially benchmarked 256-dim MRL mode (3x smaller index, ~2–3% quality loss) — a modern GTE-multilingual-based alternative to BGE-M3 at roughly half the parameters and a third the dimensions | MRL is only trained/validated at 256, not a tunable range — no in-between option<br>Newer and less battle-tested than BGE-M3<br>Not on Workers AI |
+| [Nomic-embed-text-v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5) | 137M | 8,192 tokens | 768 native; MRL benchmarked at **512 / 256 / 128 / 64** (MTEB 61.96 / 61.04 / 59.34 / 56.10 vs. 62.28 native) | Apache 2.0 | ⏳ Not on Workers AI — untested | Smallest of the long-context models (137M) with an 8K window<br>Matryoshka truncation down to 64 dims<br>Paired vision model (nomic-embed-vision) for future multimodal use | Needs `trust_remote_code` on some transformers versions<br>Requires task-prefixing (`search_document`/`search_query`/etc.) to hit its published scores<br>Not on Workers AI |
+| [mxbai-embed-xsmall-v1](https://huggingface.co/mixedbread-ai/mxbai-embed-xsmall-v1) | 24.1M | 4,096 tokens | 384 native; MRL supported (33% reduction, ≈**256**, retains 96.2% performance) — no official discrete list published | Apache 2.0 | ⏳ Not on Workers AI — untested | Dramatically smaller (24.1M params) and cheaper to run than everything else here<br>Still publishes competitive retrieval scores for its size | English-only<br>Shorter 4,096-token context than the other long-context models<br>Being the newest/smallest, the most likely to trail on raw taxonomy-matching accuracy<br>Not on Workers AI |
 
-```bash
-npx tsx scripts/seed-taxonomy.ts
-```
+mxbai-embed-large-v1, mxbai-embed-xsmall-v1, Snowflake arctic-embed-m-v2.0, and Nomic-embed-text-v1.5 aren't in Workers AI's catalog, so running them here would require a separate embedding backend (e.g. a local runtime like Ollama, or a hosted API like Hugging Face Inference) rather than just a `--model=` flag change. They're listed for completeness but haven't been run against this project's data.
 
-```bash
-npx tsx scripts/seed-taxonomy.ts --model=@cf/baai/bge-base-en-v1.5 --dimensions=768
-```
+### Results, by dimension
 
-The model and its vector size are `--model=`/`--dimensions=` flags, defaulting to `EMBEDDING_MODEL`/`EMBEDDING_DIMENSIONS` in `.env` if set, otherwise `@cf/google/embeddinggemma-300m` at `768` (the same defaults `classify-synthetic-data.ts` uses, shared via `scripts/lib/workers-ai.ts`). The script processes each taxonomy row sequentially, embedding the category name and tier path (e.g. `Amusement and Theme Parks: Attractions > Amusement and Theme Parks`). Progress is logged every 50 rows. Output is written incrementally to `data/content-taxonomy-3.1-vectors.<model-slug>.ndjson` as newline-delimited JSON, so a partial run isn't lost if the script is interrupted. This file isn't gitignored — commit it once generated so others don't have to re-run the embedding pass.
+Accuracy from the [offline evaluation](#classify-the-generated-samples-offline-evaluation) against all 704 synthetic samples. Results are grouped by vector size rather than pooled into one table, because a 768-dimension run and a 1024-dimension run aren't directly comparable on accuracy alone — they're also different storage and query costs per Vectorize index, and (per [Why cosine similarity](#why-cosine-similarity)) vectors at different sizes can't be compared to each other even for the *same* model. Full per-model numbers live in `data/synthetic-content.classified.<model-slug>.<dimensions>d.summary.json`; ranked best-to-worst by top-1 accuracy within each group.
 
-> **Note:** With ~700 categories and one API call per row, processed sequentially, the full run takes several minutes. Rate-limit responses (HTTP 429) are retried automatically; any rows that still fail after retries are listed in the summary at the end.
+Any group below a model's native size (128d and 32d here) was produced by the client-side MRL truncation in `embedText()` (see [What MRL is](#what-mrl-is-and-why-its-the-thing-that-makes-this-possible)) — Cloudflare Workers AI has no request parameter to return a smaller vector directly, so `scripts/lib/workers-ai.ts` truncates the model's native output to the first N values itself whenever `--dimensions=` is below native.
 
-**2. Load embeddings into Vectorize**
+**1024 dimensions**
 
-Once `data/content-taxonomy-3.1-vectors.<model-slug>.ndjson` has been generated, insert the vectors into the `iab-content-taxonomy` index:
+| Model | Top-1 accuracy | Top-5 accuracy | Correct match kept (min-score) |
+|---|---|---|---|
+| Qwen3-Embedding-0.6B | 70.3% | 91.1% | 68.0% (@0.3) |
+| BGE-M3 | 65.9% | 88.8% | 88.8% (@0.3) |
 
-```bash
-npx wrangler vectorize insert iab-content-taxonomy --file=data/content-taxonomy-3.1-vectors.cf-baai-bge-base-en-v1-5.ndjson
-```
+**768 dimensions**
 
-Verify the import:
+| Model | Top-1 accuracy | Top-5 accuracy | Correct match kept (min-score) |
+|---|---|---|---|
+| EmbeddingGemma-300M | 75.0% | 94.5% | 89.6% (@0.3) |
+| bge-base-en-v1.5 | 75.0% | 94.5% | 84.7% (@0.65) |
 
-```bash
-npx wrangler vectorize get iab-content-taxonomy
-```
+**128 dimensions** (EmbeddingGemma-300M truncated — its lowest officially benchmarked MRL size)
 
-The vector count should match the number of rows in the taxonomy file (minus any that failed after retries).
+| Model | Top-1 accuracy | Top-5 accuracy | Correct match kept (min-score) |
+|---|---|---|---|
+| EmbeddingGemma-300M | 64.8% | 85.4% | 85.4% (@0.3) |
 
-### Local development
+**32 dimensions** (Qwen3-Embedding-0.6B truncated — the floor of its documented 32–1024 MRL range)
 
-```bash
-npx wrangler dev
-```
+| Model | Top-1 accuracy | Top-5 accuracy | Correct match kept (min-score) |
+|---|---|---|---|
+| Qwen3-Embedding-0.6B | 37.5% | 65.8% | 64.6% (@0.3) |
 
-The worker runs at `http://localhost:8787`. Vectorize bindings are configured with `remote: true` in `wrangler.jsonc`, so `AI` and both Vectorize indexes reach your real Cloudflare account even in local dev — only the request routing runs locally.
-
-### Test the scraper in isolation
-
-A temporary debug route (`GET /debug-scrape`) lets you exercise the homepage scraper before wiring up classification.
-
-```bash
-curl "http://localhost:8787/debug-scrape?url=https://example.com" | jq
-```
-
-Returns JSON with `title`, `description`, `headings`, `combinedText`, and the normalized `url`. On failure, the route responds with `502` and an `{ error, url }` body.
-
-> **Note:** Remove or gate this route behind an environment check before deploying to production.
-
-### Classify a URL
-
-```bash
-curl "http://localhost:8787/classify?url=https://example.com" | jq
-```
-
-**Response**
-
-```json
-{
-  "url": "https://example.com",
-  "title": "Example Domain",
-  "allMatches": [
-    { "id": "605", "score": 0.615, "name": "Shareware and Freeware", "tier1": "Technology & Computing" }
-  ],
-  "confidentMatches": [],
-  "contentId": "100680ad546ce6a577f42f52df33b4cfdca756859e664b8d7de329b150d09ce9"
-}
-```
-
-- `allMatches` — top 5 nearest taxonomy categories by cosine similarity.
-- `confidentMatches` — subset of `allMatches` clearing the similarity threshold (currently 0.65 — under evaluation against real-world scores).
-- `contentId` — deterministic hash of the normalized URL, used as the vector ID in `CONTENT_INDEX`; re-classifying the same URL overwrites rather than duplicates.
-
-On failure (unreachable URL, non-HTML content, timeout), the route responds with `502` and an `{ error, url }` body.
-
-### Deploy
-
-```bash
-npx wrangler deploy
-```
+- **Top-1/Top-5 accuracy** (`accuracy.top1Rate`/`accuracy.topNRate` in the summary JSON) is the embedding model's raw discriminative power — whether each sample's own ground-truth category is its single best match, or anywhere in its top-5, ranked across *all* taxonomy categories, independent of `--min-score=`.
+- **Correct match kept** (`coverage.recordsWithCorrectMatchKeptRate`) is measured at the `--min-score=` shown in parentheses — how often the ground-truth category survives the confidence filter actually applied to output, which varies by model since score distributions aren't comparable across models (see [Why cosine similarity](#why-cosine-similarity)).
+- bge-base-en-v1.5 isn't among the seven models from [Embedding models](#embedding-models) above — it was evaluated in earlier work and is kept here as an additional 768d baseline for comparison.
+- Qwen3-Embedding-0.6B has the best raw top-1/top-5 accuracy of any model tested at native size so far, but its "correct match kept" rate (68.0%) trails its own top-1 rate (70.3%) more than the other models do — at the default 0.3 min-score, 23% of records get *no* match at all (`recordsWithAnyMatchRate` 77.0%), meaning Qwen3's cosine scores need their own threshold calibration rather than reusing 0.3 as-is (see the min-score note under [Classify the generated samples](#classify-the-generated-samples-offline-evaluation)).
+- EmbeddingGemma-300M's 6x truncation (768d → 128d) cost 10.2 points of top-1 accuracy (75.0% → 64.8%) and 9.1 points of top-5 (94.5% → 85.4%) — a real but not catastrophic drop for a 6x smaller index, and still the best 128d result available since it's the only model here documented as MRL-capable at that size.
+- Qwen3-Embedding-0.6B's 32x truncation (1024d → 32d) is much less forgiving: top-1 fell 32.8 points (70.3% → 37.5%) and top-5 fell 25.3 points (91.1% → 65.8%) — a proportionally much larger loss than EmbeddingGemma-300M took at 128d, despite Qwen3 scoring higher at native size. This tracks with the "Native / MRL dimensions" table above: EmbeddingGemma-300M's low-dimension option is an officially benchmarked, validated size (Google published MTEB numbers at exactly 128d), while Qwen3's 32d is only the documented *floor* of a continuous range with no official benchmark at that specific size. **If going to the lowest possible dimension is the priority, EmbeddingGemma-300M at 128d (64.8%/85.4%) is the clearly better choice over Qwen3-Embedding-0.6B at 32d (37.5%/65.8%)** — though the two aren't tested at matched sizes (128d vs. 32d, a 4x difference in vector size), so a fairer head-to-head would also test Qwen3 at 128d before ruling it out for low-dimension use.
 
 ## Project structure
 
 ```
 data/
   content-taxonomy-3.1.tsv   # Official IAB Content Taxonomy v3.1 (input)
-  content-taxonomy-3.1-vectors.*.ndjson     # Per-model taxonomy embeddings (output from seed-taxonomy.ts and classify-synthetic-data.ts)
+  content-taxonomy-3.1-vectors.*.ndjson     # Per-model, per-dimension taxonomy embeddings (output from seed-taxonomy.ts and classify-synthetic-data.ts)
   synthetic-content.ndjson                  # Generated synthetic samples (output from generate-synthetic-data script)
   synthetic-content.failures.ndjson         # Categories that failed/were refused during generation
-  synthetic-content.classified.*.ndjson         # Per-model classification results (output from classify-synthetic-data script)
-  synthetic-content.classified.*.summary.json   # Per-model accuracy summary (output from classify-synthetic-data script)
+  synthetic-content.classified.*.ndjson         # Per-model, per-dimension classification results (output from classify-synthetic-data script)
+  synthetic-content.classified.*.summary.json   # Per-model, per-dimension accuracy summary (output from classify-synthetic-data script)
 docs/
   pipeline-seed.svg               # Diagram: taxonomy seeding pipeline
-  pipeline-classify.svg           # Diagram: classify request pipeline
   pipeline-classify-synthetic.svg # Diagram: offline synthetic-data classification pipeline
   cosine-similarity.svg           # Diagram: what cosine similarity measures and why it's used
 scripts/
@@ -331,9 +350,7 @@ scripts/
   summarize-synthetic-data.ts # Prints a one-line-per-record summary of the generated synthetic content
   classify-synthetic-data.ts  # Offline: embeds synthetic samples, matches against taxonomy embeddings, scores accuracy
 src/
-  index.ts                    # Worker entry point — request routing
-  scrape.ts                   # Homepage fetch and HTML text extraction (HTMLRewriter)
-  classify.ts                 # Scrape → embed → query taxonomy → store content vector
+  index.ts                    # Worker entry point (currently a placeholder — see Local development)
 wrangler.jsonc                 # Cloudflare Worker configuration
 ```
 

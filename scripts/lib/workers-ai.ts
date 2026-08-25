@@ -139,7 +139,21 @@ export async function embedText(text: string, options: EmbedTextOptions): Promis
 
 		const vector = json.result.data[0];
 
-		// Fail fast if dimensions don't match — prevents writing bad vectors
+		// Workers AI always returns a model's native-size vector — there's no
+		// request parameter to ask for a smaller one. If the caller requested
+		// fewer dimensions than that, truncate to the first N values ourselves.
+		// This is only a valid embedding for Matryoshka (MRL)-trained models,
+		// where every prefix of the native vector is itself a meaningful
+		// embedding (see the "What MRL is" section in the README) — for a
+		// non-MRL model this silently produces a degraded, unsupported vector,
+		// so only pass --dimensions= below native for models documented as
+		// MRL-capable at that size.
+		if (vector.length > dimensions) {
+			console.warn(`Truncating ${model}'s native ${vector.length}d output to ${dimensions}d (MRL) — only valid for MRL-trained models.`);
+			return vector.slice(0, dimensions);
+		}
+
+		// Fail fast if still mismatched — prevents writing bad vectors
 		if (vector.length !== dimensions) {
 			throw new Error(
 				`Model ${model} returned ${vector.length} dimensions, expected ${dimensions}. Check your --dimensions= or your Vectorize index config.`,
@@ -161,13 +175,18 @@ export function modelSlug(model: string): string {
 }
 
 /**
- * Path for the cached taxonomy vector NDJSON for a given model. Shared by
- * seed-taxonomy.ts (which writes it) and classify-synthetic-data.ts (which
- * reads it, generating it first if missing), so the two scripts always agree
- * on where a given model's vectors live.
+ * Path for the cached taxonomy vector NDJSON for a given model + dimensions.
+ * Shared by seed-taxonomy.ts (which writes it) and classify-synthetic-data.ts
+ * (which reads it, generating it first if missing), so the two scripts always
+ * agree on where a given model/dimensions pair's vectors live.
+ *
+ * Dimensions are part of the filename (not just the model) because several of
+ * these models support Matryoshka Representation Learning — the same model
+ * can be truncated to different vector sizes, and vectors at different sizes
+ * are not comparable, so each size needs its own cache file.
  */
-export function taxonomyVectorsPathForModel(model: string): string {
-	return `data/content-taxonomy-3.1-vectors.${modelSlug(model)}.ndjson`;
+export function taxonomyVectorsPathForModel(model: string, dimensions: number): string {
+	return `data/content-taxonomy-3.1-vectors.${modelSlug(model)}.${dimensions}d.ndjson`;
 }
 
 /** Cosine similarity between two equal-length vectors, in [-1, 1]. */
