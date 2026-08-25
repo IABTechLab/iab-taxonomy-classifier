@@ -294,6 +294,8 @@ mxbai-embed-large-v1, mxbai-embed-xsmall-v1, Snowflake arctic-embed-m-v2.0, and 
 
 Accuracy from the [offline evaluation](#classify-the-generated-samples-offline-evaluation) against all 704 synthetic samples. Results are grouped by vector size rather than pooled into one table, because a 768-dimension run and a 1024-dimension run aren't directly comparable on accuracy alone — they're also different storage and query costs per Vectorize index, and (per [Why cosine similarity](#why-cosine-similarity)) vectors at different sizes can't be compared to each other even for the *same* model. Full per-model numbers live in `data/synthetic-content.classified.<model-slug>.<dimensions>d.summary.json`; ranked best-to-worst by top-1 accuracy within each group.
 
+Any group below a model's native size (128d and 32d here) was produced by the client-side MRL truncation in `embedText()` (see [What MRL is](#what-mrl-is-and-why-its-the-thing-that-makes-this-possible)) — Cloudflare Workers AI has no request parameter to return a smaller vector directly, so `scripts/lib/workers-ai.ts` truncates the model's native output to the first N values itself whenever `--dimensions=` is below native.
+
 **1024 dimensions**
 
 | Model | Top-1 accuracy | Top-5 accuracy | Correct match kept (min-score) |
@@ -308,10 +310,23 @@ Accuracy from the [offline evaluation](#classify-the-generated-samples-offline-e
 | EmbeddingGemma-300M | 75.0% | 94.5% | 89.6% (@0.3) |
 | bge-base-en-v1.5 | 75.0% | 94.5% | 84.7% (@0.65) |
 
+**128 dimensions** (EmbeddingGemma-300M truncated — its lowest officially benchmarked MRL size)
+
+| Model | Top-1 accuracy | Top-5 accuracy | Correct match kept (min-score) |
+|---|---|---|---|
+| EmbeddingGemma-300M | 64.8% | 85.4% | 85.4% (@0.3) |
+
+**32 dimensions** (Qwen3-Embedding-0.6B truncated — the floor of its documented 32–1024 MRL range)
+
+| Model | Top-1 accuracy | Top-5 accuracy | Correct match kept (min-score) |
+|---|---|---|---|
+| Qwen3-Embedding-0.6B | *pending* | *pending* | *pending* |
+
 - **Top-1/Top-5 accuracy** (`accuracy.top1Rate`/`accuracy.topNRate` in the summary JSON) is the embedding model's raw discriminative power — whether each sample's own ground-truth category is its single best match, or anywhere in its top-5, ranked across *all* taxonomy categories, independent of `--min-score=`.
 - **Correct match kept** (`coverage.recordsWithCorrectMatchKeptRate`) is measured at the `--min-score=` shown in parentheses — how often the ground-truth category survives the confidence filter actually applied to output, which varies by model since score distributions aren't comparable across models (see [Why cosine similarity](#why-cosine-similarity)).
 - bge-base-en-v1.5 isn't among the seven models from [Embedding models](#embedding-models) above — it was evaluated in earlier work and is kept here as an additional 768d baseline for comparison.
-- Qwen3-Embedding-0.6B has the best raw top-1/top-5 accuracy of any model tested so far, but its "correct match kept" rate (68.0%) trails its own top-1 rate (70.3%) more than the other models do — at the default 0.3 min-score, 23% of records get *no* match at all (`recordsWithAnyMatchRate` 77.0%), meaning Qwen3's cosine scores need their own threshold calibration rather than reusing 0.3 as-is (see the min-score note under [Classify the generated samples](#classify-the-generated-samples-offline-evaluation)).
+- Qwen3-Embedding-0.6B has the best raw top-1/top-5 accuracy of any model tested at native size so far, but its "correct match kept" rate (68.0%) trails its own top-1 rate (70.3%) more than the other models do — at the default 0.3 min-score, 23% of records get *no* match at all (`recordsWithAnyMatchRate` 77.0%), meaning Qwen3's cosine scores need their own threshold calibration rather than reusing 0.3 as-is (see the min-score note under [Classify the generated samples](#classify-the-generated-samples-offline-evaluation)).
+- EmbeddingGemma-300M's 6x truncation (768d → 128d) cost 10.2 points of top-1 accuracy (75.0% → 64.8%) and 9.1 points of top-5 (94.5% → 85.4%) — a real but not catastrophic drop for a 6x smaller index, and still the best 128d result available since it's the only model here documented as MRL-capable at that size.
 
 ## Project structure
 
